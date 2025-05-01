@@ -46,6 +46,7 @@ import {
   FiCopy,
 } from "react-icons/fi";
 import Menssage from "./menssage/Menssage";
+import P2PServiceDownloader from "../components/P2PServiceDownloader";
 
 interface Message {
   sender: string;
@@ -1876,8 +1877,34 @@ const Chat: React.FC = () => {
     }
   };
 
+  // Add this to your Chat.tsx component, near the top of the component function
+  const startP2PService = async () => {
+    try {
+      console.log("Attempting to start P2P service via API...");
+      const response = await fetch("http://localhost:3001/api/start-p2p", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const data = await response.json();
+      console.log("P2P service start response:", data);
+
+      // After starting the service, connect to WebSocket
+      setTimeout(() => {
+        connectWebSocket();
+      }, 1000); // Give it a second to start up
+    } catch (error) {
+      console.error("Error starting P2P service:", error);
+      // Still try to connect to WebSocket in case the service was already running
+      connectWebSocket();
+    }
+  };
+
   return (
-    <>
+    <Box height="100vh" display="flex" flexDirection="column">
+      <P2PServiceDownloader connectedStatus={connected} />
       <Container maxW="container.xl" py={5} color="whiteAlpha.900">
         <VStack spacing={4} align="stretch">
           <HStack justifyContent="space-between">
@@ -2500,7 +2527,7 @@ const Chat: React.FC = () => {
           </ModalContent>
         </Modal>
       </Container>
-    </>
+    </Box>
   );
 };
 
