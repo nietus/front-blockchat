@@ -43,6 +43,7 @@ import {
   FiMessageSquare,
   FiChevronLeft,
   FiChevronRight,
+  FiCopy,
 } from "react-icons/fi";
 import Menssage from "./menssage/Menssage";
 
@@ -1862,6 +1863,19 @@ const Chat: React.FC = () => {
     };
   }, []);
 
+  const copyAddressToClipboard = () => {
+    if (navigator.clipboard && ethAddress) {
+      navigator.clipboard.writeText(ethAddress);
+      toast({
+        title: "Address Copied",
+        description: "Your Ethereum address has been copied to clipboard",
+        status: "success",
+        duration: 2000,
+        isClosable: true,
+      });
+    }
+  };
+
   return (
     <>
       <Container maxW="container.xl" py={5} color="whiteAlpha.900">
@@ -2194,10 +2208,20 @@ const Chat: React.FC = () => {
                         <Text fontSize={["xs", "sm"]}>
                           Connected as: {username}
                         </Text>
-                        <Text fontSize={["xs", "sm"]}>
-                          Your P2P Address: {ethAddress.substring(0, 6)}...
-                          {ethAddress.substring(38)} (Port: {p2pPort})
-                        </Text>
+                        <HStack>
+                          <Text fontSize={["xs", "sm"]}>
+                            Your P2P Address: {ethAddress.substring(0, 6)}...
+                            {ethAddress.substring(38)} (Port: {p2pPort})
+                          </Text>
+                          <IconButton
+                            aria-label="Copy address"
+                            icon={<FiCopy />}
+                            size="xs"
+                            onClick={copyAddressToClipboard}
+                            colorScheme="teal"
+                            variant="ghost"
+                          />
+                        </HStack>
                         {activePeer && (
                           <Text
                             fontSize={["xs", "sm"]}
