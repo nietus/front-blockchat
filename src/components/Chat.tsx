@@ -257,7 +257,9 @@ const Chat: React.FC = () => {
       console.log("Fetching messages from blockchain...");
 
       // Fetch the blockchain data
-      const response = await fetch("http://localhost:8003/chain");
+      const response = await fetch(
+        "https://blockchain-bc-production.up.railway.app/node0/chain"
+      );
 
       if (response.status === 200) {
         const chainData = await response.json();
@@ -1118,7 +1120,9 @@ const Chat: React.FC = () => {
     encryptedSymmetricKey?: string
   ) => {
     try {
-      console.log(`Posting message to blockchain at http://localhost:8003...`);
+      console.log(
+        `Posting message to blockchain at https://blockchain-bc-production.up.railway.app/node0...`
+      );
 
       const txData = {
         author: sender, // Note: using author instead of sender as per Python script
@@ -1127,19 +1131,24 @@ const Chat: React.FC = () => {
         encryptedSymmetricKey: encryptedSymmetricKey,
       };
 
-      const response = await fetch("http://localhost:8003/new_transaction", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(txData),
-      });
+      const response = await fetch(
+        "https://blockchain-bc-production.up.railway.app/node0/new_transaction",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(txData),
+        }
+      );
 
       if (response.status === 201) {
         console.log("Transaction submitted successfully");
 
         // Mine the block to include the transaction
-        const mineResponse = await fetch("http://localhost:8003/mine");
+        const mineResponse = await fetch(
+          "https://blockchain-bc-production.up.railway.app/node0/mine"
+        );
 
         if (mineResponse.status === 200) {
           console.log("Block mined successfully, message saved to blockchain");
