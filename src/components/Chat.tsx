@@ -479,16 +479,19 @@ const Chat: React.FC = () => {
       console.log(
         `Registering address ${address} with relay server using P2P port ${port}...`
       );
-      const response = await fetch("http://localhost:8080/store", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          sender_id: address,
-          p2p_addr: `127.0.0.1:${port}`,
-        }),
-      });
+      const response = await fetch(
+        "https://relayserver-7mrprq-production.up.railway.app/store",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sender_id: address,
+            p2p_addr: `127.0.0.1:${port}`,
+          }),
+        }
+      );
 
       const responseText = await response.text();
       console.log(
@@ -1327,15 +1330,18 @@ const Chat: React.FC = () => {
       setIsConnecting(true);
 
       // First try to establish connection through relay server
-      const response = await fetch("http://localhost:8080/discover", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          target_id: targetAddress,
-        }),
-      });
+      const response = await fetch(
+        "https://relayserver-7mrprq-production.up.railway.app/discover",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            target_id: targetAddress,
+          }),
+        }
+      );
 
       const data = await response.json();
       if (data.status === "present") {
@@ -1366,7 +1372,7 @@ const Chat: React.FC = () => {
           try {
             // Wait for punch through
             const punchResponse = await fetch(
-              "http://localhost:8080/waiting_punch",
+              "https://relayserver-7mrprq-production.up.railway.app/waiting_punch",
               {
                 method: "POST",
                 headers: {
