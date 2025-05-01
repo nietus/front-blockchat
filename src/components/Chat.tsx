@@ -484,7 +484,7 @@ const Chat: React.FC = () => {
         `Registering address ${address} with relay server using P2P port ${port}...`
       );
       const response = await fetch(
-        "https://relayserver-7mrprq-production.up.railway.app/store",
+        "https://relay-server-nzhu.onrender.com/store",
         {
           method: "POST",
           headers: {
@@ -1342,7 +1342,7 @@ const Chat: React.FC = () => {
 
       // First try to establish connection through relay server
       const response = await fetch(
-        "https://relayserver-7mrprq-production.up.railway.app/discover",
+        "https://relay-server-nzhu.onrender.com/discover",
         {
           method: "POST",
           headers: {
@@ -1383,7 +1383,7 @@ const Chat: React.FC = () => {
           try {
             // Wait for punch through
             const punchResponse = await fetch(
-              "https://relayserver-7mrprq-production.up.railway.app/waiting_punch",
+              "https://relay-server-nzhu.onrender.com/waiting_punch",
               {
                 method: "POST",
                 headers: {
