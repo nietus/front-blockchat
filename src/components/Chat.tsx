@@ -98,6 +98,7 @@ const STORAGE_KEYS = {
   WS_PORT: "blockchat_ws_port",
   P2P_PORT: "blockchat_p2p_port",
   ACTIVE_PEER: "blockchat_active_peer",
+  PUBLIC_IP: "blockchat_public_ip", // Add new key for public IP
 };
 
 const Chat: React.FC = () => {
@@ -258,7 +259,7 @@ const Chat: React.FC = () => {
 
       // Fetch the blockchain data
       const response = await fetch(
-        "https://blockchain-bc-production.up.railway.app/node0/chain"
+        "https://blockchain-bc-production.up.railway.app/chain"
       );
 
       if (response.status === 200) {
@@ -480,8 +481,11 @@ const Chat: React.FC = () => {
   // 1. Separate the relay server connection
   const connectToRelayServer = async (address: string, port: number) => {
     try {
+      // First get the public IP address
+      const publicIp = await getPublicIpAddress();
+
       console.log(
-        `Registering address ${address} with relay server using P2P port ${port}...`
+        `Registering address ${address} with relay server using P2P port ${port} and IP ${publicIp}...`
       );
       const response = await fetch(
         "https://relay-server-nzhu.onrender.com/store",
@@ -492,7 +496,7 @@ const Chat: React.FC = () => {
           },
           body: JSON.stringify({
             sender_id: address,
-            p2p_addr: `127.0.0.1:${port}`,
+            p2p_addr: `${publicIp}:${port}`,
           }),
         }
       );
@@ -504,12 +508,12 @@ const Chat: React.FC = () => {
 
       if (response.ok) {
         console.log(
-          `Successfully registered with relay server using port ${port}`
+          `Successfully registered with relay server using IP ${publicIp} and port ${port}`
         );
         // Display a success message
         toast({
           title: "Connected to Relay Server",
-          description: `Your P2P port (${port}) is now registered`,
+          description: `Your IP (${publicIp}) and P2P port (${port}) are now registered`,
           status: "success",
           duration: 3000,
           isClosable: true,
@@ -1908,6 +1912,51 @@ const Chat: React.FC = () => {
       console.error("Error starting P2P service:", error);
       // Still try to connect to WebSocket in case the service was already running
       connectWebSocket();
+    }
+  };
+
+  // Add a function to get public IP address
+  const getPublicIpAddress = async (): Promise<string> => {
+    try {
+      // Try with ipify service first
+      const response = await fetch("https://api.ipify.org?format=json");
+      const data = await response.json();
+      console.log("Retrieved public IP:", data.ip);
+
+      // Store IP in localStorage for future use
+      localStorage.setItem(STORAGE_KEYS.PUBLIC_IP, data.ip);
+      return data.ip;
+    } catch (error) {
+      console.error("Error getting public IP from ipify:", error);
+
+      // Try with ipinfo as a backup
+      try {
+        const backupResponse = await fetch("https://ipinfo.io/json");
+        const backupData = await backupResponse.json();
+        if (backupData.ip) {
+          console.log(
+            "Retrieved public IP from backup service:",
+            backupData.ip
+          );
+          localStorage.setItem(STORAGE_KEYS.PUBLIC_IP, backupData.ip);
+          return backupData.ip;
+        }
+      } catch (backupError) {
+        console.error(
+          "Error getting public IP from backup service:",
+          backupError
+        );
+      }
+
+      // Fallback to any stored IP from previous sessions
+      const storedIp = localStorage.getItem(STORAGE_KEYS.PUBLIC_IP);
+      if (storedIp) {
+        console.log("Using stored public IP:", storedIp);
+        return storedIp;
+      }
+
+      // Return a placeholder if we can't get the IP
+      return "0.0.0.0";
     }
   };
 
