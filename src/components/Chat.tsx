@@ -259,7 +259,7 @@ const Chat: React.FC = () => {
 
       // Fetch the blockchain data
       const response = await fetch(
-        "https://blockchain-bc-production.up.railway.app/chain"
+        "https://blockchain-bc-production.up.railway.app/node0/chain"
       );
 
       if (response.status === 200) {
@@ -481,11 +481,25 @@ const Chat: React.FC = () => {
   // 1. Separate the relay server connection
   const connectToRelayServer = async (address: string, port: number) => {
     try {
+      // If address is empty, try to get it from localStorage directly
+      let finalAddress = address;
+      if (!finalAddress || finalAddress === "") {
+        finalAddress = localStorage.getItem(STORAGE_KEYS.ETH_ADDRESS) || "";
+        console.log("Retrieved address from localStorage:", finalAddress);
+
+        if (!finalAddress) {
+          console.error(
+            "Cannot register with relay server: No Ethereum address available"
+          );
+          return false;
+        }
+      }
+
       // First get the public IP address
       const publicIp = await getPublicIpAddress();
 
       console.log(
-        `Registering address ${address} with relay server using P2P port ${port} and IP ${publicIp}...`
+        `Registering address ${finalAddress} with relay server using P2P port ${port} and IP ${publicIp}...`
       );
       const response = await fetch(
         "https://relay-server-nzhu.onrender.com/store",
@@ -495,7 +509,7 @@ const Chat: React.FC = () => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            sender_id: address,
+            sender_id: finalAddress,
             p2p_addr: `${publicIp}:${port}`,
           }),
         }
@@ -569,18 +583,53 @@ const Chat: React.FC = () => {
           reconnectTimeoutRef.current = undefined;
         }
 
-        if (ethAddress) {
-          const registerMsg = {
-            type: "register",
-            content: "Register ethereum address",
-            eth_address: ethAddress,
-          };
-          console.log("Sending WebSocket registration:", registerMsg);
-          ws.send(JSON.stringify(registerMsg));
-
-          // Force refresh messages immediately after successful connection
-          setTimeout(() => forceRefreshMessages(), 500);
+        // Don't try to register if we don't have an ETH address
+        if (!ethAddress) {
+          console.error(
+            "Cannot register with WebSocket: Ethereum address is missing"
+          );
+          return;
         }
+
+        // Send multiple registration messages with delays to ensure it gets through
+        const registerMsg = {
+          type: "register",
+          content: "Register ethereum address",
+          eth_address: ethAddress,
+          sender: ethAddress,
+          timestamp: Date.now(),
+        };
+
+        console.log("Sending initial WebSocket registration:", registerMsg);
+        ws.send(JSON.stringify(registerMsg));
+
+        // Send follow-up registrations with increasing delays
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            console.log("Sending follow-up registration (attempt 1)");
+            wsRef.current.send(JSON.stringify(registerMsg));
+          }
+        }, 500);
+
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            console.log("Sending follow-up registration (attempt 2)");
+            wsRef.current.send(JSON.stringify(registerMsg));
+          }
+        }, 1500);
+
+        // Re-register with relay server after successful websocket connection
+        // This ensures the address is properly registered even if the initial attempt failed
+        setTimeout(async () => {
+          const storedAddress = localStorage.getItem(STORAGE_KEYS.ETH_ADDRESS);
+          if (storedAddress) {
+            console.log("Re-registering address with relay server...");
+            await connectToRelayServer(storedAddress, p2pPort);
+          }
+        }, 2000);
+
+        // Force refresh messages after a delay to ensure registration is complete
+        setTimeout(() => forceRefreshMessages(), 2000);
       };
 
       ws.onerror = (error) => {
@@ -831,6 +880,8 @@ const Chat: React.FC = () => {
       }
 
       if (window.ethereum) {
+        let addressToUse = ethAddress;
+
         // If we already have an eth address in localStorage, use it without prompting MetaMask
         if (ethAddress && ethAddress.startsWith("0x")) {
           console.log("Using saved Ethereum address:", ethAddress);
@@ -847,11 +898,15 @@ const Chat: React.FC = () => {
           const address = accounts[0];
           setEthAddress(address);
           localStorage.setItem(STORAGE_KEYS.ETH_ADDRESS, address);
+          addressToUse = address; // Use this immediately rather than waiting for state update
         }
 
-        // 1. First connect to relay server
-        console.log("Connecting to relay server...");
-        const relayConnected = await connectToRelayServer(ethAddress, p2pPort);
+        // 1. First connect to relay server, always using the definitive address
+        console.log("Connecting to relay server with address:", addressToUse);
+        const relayConnected = await connectToRelayServer(
+          addressToUse,
+          p2pPort
+        );
         if (!relayConnected) {
           console.error("Failed to register with relay server");
           toast({
@@ -869,10 +924,10 @@ const Chat: React.FC = () => {
 
         toast({
           title: "Connected to Wallet",
-          description: `Connected to address: ${ethAddress.substring(
+          description: `Connected to address: ${addressToUse.substring(
             0,
             6
-          )}...${ethAddress.substring(38)}`,
+          )}...${addressToUse.substring(38)}`,
           status: "success",
           duration: 3000,
           isClosable: true,
