@@ -204,7 +204,14 @@ const Chat: React.FC = () => {
     }
   }, []);
 
-  // Add a helper function to compare message arrays
+  // Add a stable message ID generator to uniquely identify messages
+  const getMessageId = (msg: Message): string => {
+    return `${msg.signature || ""}_${msg.sender}_${
+      msg.timestamp
+    }_${msg.content.substring(0, 10)}`;
+  };
+
+  // Create a more reliable message comparison function
   const areMessagesEqual = (
     messagesA: Message[],
     messagesB: Message[]
@@ -213,24 +220,41 @@ const Chat: React.FC = () => {
       return false;
     }
 
-    // Compare messages by content, sender and timestamp
-    return messagesA.every((msgA, index) => {
-      const msgB = messagesB[index];
-      return (
-        msgA.content === msgB.content &&
-        msgA.sender === msgB.sender &&
-        msgA.timestamp === msgB.timestamp &&
-        msgA.decrypted === msgB.decrypted
-      );
-    });
+    // Create message ID maps for easier comparison
+    const mapA = new Map(messagesA.map((msg) => [getMessageId(msg), msg]));
+    const mapB = new Map(messagesB.map((msg) => [getMessageId(msg), msg]));
+
+    // Check if all message IDs in A exist in B
+    for (const id of mapA.keys()) {
+      if (!mapB.has(id)) {
+        return false;
+      }
+    }
+
+    // Check if all messages in B exist in A
+    for (const id of mapB.keys()) {
+      if (!mapA.has(id)) {
+        return false;
+      }
+    }
+
+    return true;
   };
 
   // Update setMessages to only change state if content actually changed
   const updateMessagesIfChanged = (newMessages: Message[]) => {
-    // Compare with current messages to avoid unnecessary updates
-    if (!areMessagesEqual(messages, newMessages)) {
-      setMessages(newMessages);
-    }
+    setMessages((currentMessages) => {
+      // If the arrays are identical by reference, no need to update
+      if (currentMessages === newMessages) return currentMessages;
+
+      // If messages are equivalent, keep the current state to prevent re-renders
+      if (areMessagesEqual(currentMessages, newMessages)) {
+        return currentMessages;
+      }
+
+      console.log("Messages have changed, updating state");
+      return newMessages; // Only update if there's a real change
+    });
   };
 
   // Add a new function to fetch messages from the blockchain (add this before the useEffect)
@@ -412,59 +436,54 @@ const Chat: React.FC = () => {
           };
         });
 
+        // Preserve unread counts from existing conversations
+        const preserveUnreadCounts = (
+          oldConvs: Record<string, Conversation>,
+          newConvs: Record<string, Conversation>
+        ) => {
+          const result = { ...newConvs };
+          Object.keys(result).forEach((peerAddress) => {
+            if (oldConvs[peerAddress]) {
+              result[peerAddress].unreadCount =
+                oldConvs[peerAddress].unreadCount;
+            }
+          });
+          return result;
+        };
+
         // Update conversations with blockchain data
         setConversations((prevConversations) => {
-          const merged = { ...prevConversations };
-
-          // Merge in the new conversations
-          Object.keys(newConversations).forEach((peerAddress) => {
-            merged[peerAddress] = newConversations[peerAddress];
-          });
-
+          // Create a merged conversations object with preserved unread counts
+          const merged = preserveUnreadCounts(
+            prevConversations,
+            newConversations
+          );
           return merged;
         });
 
         // Update connected peers
         setConnectedPeers(new Set(historicalPeers));
 
-        // IMPORTANT: Always update current messages view if we have an active peer
-        // This is critical for ensuring decrypted messages appear
+        // IMPORTANT: Always update current messages view if we have an active peer, but only if there were changes
         if (activePeer && newConversations[activePeer]) {
-          console.log(`Updating active messages for peer ${activePeer}`);
-          // Only update if messages have actually changed
-          const newMessages = [...newConversations[activePeer].messages];
-          updateMessagesIfChanged(newMessages);
+          // Check if the active conversation's messages have actually changed
+          const newActiveMessages = [...newConversations[activePeer].messages];
 
-          // Schedule another UI refresh to make absolutely sure updates are picked up
-          // but only if there are actual changes
-          setTimeout(() => {
-            if (activePeer && newConversations[activePeer]) {
-              updateMessagesIfChanged([
-                ...newConversations[activePeer].messages,
-              ]);
-            }
-          }, 500);
-        }
+          // First check if we already have these exact messages
+          const currentActiveConversation =
+            conversations[activePeer]?.messages || [];
 
-        // If we had newly decrypted messages, always trigger a UI refresh
-        if (hasNewDecryptedMessages) {
-          // Set a small timeout to allow state to update
-          setTimeout(() => {
-            if (activePeer && newConversations[activePeer]) {
-              updateMessagesIfChanged([
-                ...newConversations[activePeer].messages,
-              ]);
-            }
-          }, 100);
-
-          // And another refresh a bit later to be sure
-          setTimeout(() => {
-            if (activePeer && newConversations[activePeer]) {
-              updateMessagesIfChanged([
-                ...newConversations[activePeer].messages,
-              ]);
-            }
-          }, 1000);
+          // Only update messages if they've actually changed
+          if (!areMessagesEqual(currentActiveConversation, newActiveMessages)) {
+            console.log(
+              `Updating active messages for peer ${activePeer} - messages changed`
+            );
+            updateMessagesIfChanged(newActiveMessages);
+          } else {
+            console.log(
+              `Skipping update for peer ${activePeer} - no message changes`
+            );
+          }
         }
 
         console.log(
@@ -663,18 +682,16 @@ const Chat: React.FC = () => {
           const message = JSON.parse(event.data);
           console.log("Received message:", message);
 
-          // Initiate an immediate refresh regardless of message type
-          // This ensures we don't miss any messages even if the WebSocket notification
-          // doesn't contain all the data we need
-          if (message.sender !== ethAddress) {
-            // Don't refresh for our own messages
-            setTimeout(() => forceRefreshMessages(), 200); // Quick refresh
+          // Don't trigger immediate refresh for every message - throttle it
+          const now = Date.now();
+          if (now - lastMessageTimestamp > 1000) {
+            // Only refresh if it's been at least 1 second
+            setLastMessageTimestamp(now);
+            forceRefreshMessages();
           }
 
           if (message.type === "system") {
             console.log("System message:", message.content);
-            // Immediate refresh for system messages
-            forceRefreshMessages();
           } else if (message.type === "message") {
             // First try to decrypt the message if it's encrypted
             if (message.encrypted && message.encryptedSymmetricKey) {
@@ -695,19 +712,8 @@ const Chat: React.FC = () => {
               }
             }
 
-            // Add a staggered refresh approach for better reliability
-            const refreshSequence = () => {
-              // Immediate refresh
-              forceRefreshMessages();
-
-              // Then another refresh after a short delay
-              setTimeout(() => forceRefreshMessages(), 1000);
-
-              // And a final refresh after a longer delay to catch any delayed blockchain writing
-              setTimeout(() => forceRefreshMessages(), 3000);
-            };
-
-            refreshSequence();
+            // Replace the aggressive refresh sequence with a single delayed refresh
+            setTimeout(() => forceRefreshMessages(), 1000);
 
             // Add the message to the conversation immediately for a responsive UI
             if (message.sender && message.content) {
@@ -724,7 +730,17 @@ const Chat: React.FC = () => {
 
               // Update the UI immediately if this is for the active conversation
               if (activePeer === message.sender) {
-                setMessages((prevMessages) => [...prevMessages, newMessage]);
+                setMessages((prevMessages) => {
+                  // First check if this message already exists to prevent duplicates
+                  const messageExists = prevMessages.some(
+                    (msg) =>
+                      msg.signature === newMessage.signature &&
+                      msg.timestamp === newMessage.timestamp
+                  );
+
+                  if (messageExists) return prevMessages;
+                  return [...prevMessages, newMessage];
+                });
 
                 // Scroll to bottom
                 if (chatContainerRef.current) {
@@ -739,17 +755,28 @@ const Chat: React.FC = () => {
                 const peerAddress = message.sender;
 
                 if (updatedConversations[peerAddress]) {
-                  updatedConversations[peerAddress] = {
-                    ...updatedConversations[peerAddress],
-                    messages: [
-                      ...updatedConversations[peerAddress].messages,
-                      newMessage,
-                    ],
-                    unreadCount:
-                      activePeer !== peerAddress
-                        ? updatedConversations[peerAddress].unreadCount + 1
-                        : 0,
-                  };
+                  // Check if this message already exists in the conversation
+                  const messageExists = updatedConversations[
+                    peerAddress
+                  ].messages.some(
+                    (msg) =>
+                      msg.signature === newMessage.signature &&
+                      msg.timestamp === newMessage.timestamp
+                  );
+
+                  if (!messageExists) {
+                    updatedConversations[peerAddress] = {
+                      ...updatedConversations[peerAddress],
+                      messages: [
+                        ...updatedConversations[peerAddress].messages,
+                        newMessage,
+                      ],
+                      unreadCount:
+                        activePeer !== peerAddress
+                          ? updatedConversations[peerAddress].unreadCount + 1
+                          : 0,
+                    };
+                  }
                 } else {
                   updatedConversations[peerAddress] = {
                     peerAddress,
@@ -761,9 +788,8 @@ const Chat: React.FC = () => {
               });
             }
           } else if (message.type === "peer_list") {
-            // Update connected peers list
+            // Update connected peers list, but don't force refresh
             setCurrentPeers(message.peers || []);
-            forceRefreshMessages();
           } else if (message.type === "connection") {
             // Handle successful peer connection
             if (message.status === "connected" && message.peer) {
@@ -961,11 +987,8 @@ const Chat: React.FC = () => {
       // First try to get messages from blockchain
       await fetchBlockchainMessages(true);
 
-      // Ensure UI updates when active peer is selected, but only if needed
-      if (activePeer && conversations[activePeer]) {
-        // Only update if the content has actually changed
-        updateMessagesIfChanged([...conversations[activePeer].messages]);
-      }
+      // Don't update UI unless messages have actually changed from blockchain
+      // The fetchBlockchainMessages function now handles this check
 
       // Then request peers to send their latest messages
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -1016,28 +1039,28 @@ const Chat: React.FC = () => {
     // Fetch blockchain messages on mount
     forceRefreshMessages();
 
-    // Set up interval to refresh messages from blockchain every 3 seconds
-    const refreshInterval = setInterval(() => {
+    // Use a single stable refresh interval instead of multiple competing ones
+    const mainRefreshInterval = setInterval(() => {
       if (connected && ethAddress) {
-        console.log("Running scheduled 3-second blockchain refresh");
-        // Use forceRefreshMessages instead of fetchBlockchainMessages to match the refresh button behavior
+        console.log("Running standard refresh cycle");
         forceRefreshMessages();
       }
-    }, 3000); // Reduced from 5000 to 3000ms
+    }, 5000); // Use a single 5-second interval that's less aggressive
 
-    // Add an additional more aggressive refresh for the active conversation
-    const activeConvoInterval = setInterval(() => {
-      if (connected && ethAddress && activePeer) {
-        console.log(
-          `Running extra refresh for active conversation with ${activePeer}`
-        );
-        forceRefreshMessages();
+    // Add a window focus handler that's more reliable
+    const handleFocus = () => {
+      if (connected && ethAddress) {
+        console.log("Window focus gained - refreshing messages");
+        // Add a small delay to ensure the UI is ready
+        setTimeout(() => forceRefreshMessages(), 300);
       }
-    }, 2000); // Even more frequent refresh for active conversations
+    };
+    window.addEventListener("focus", handleFocus);
 
     return () => {
-      clearInterval(refreshInterval);
-      clearInterval(activeConvoInterval);
+      clearInterval(mainRefreshInterval);
+      window.removeEventListener("focus", handleFocus);
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -1045,7 +1068,7 @@ const Chat: React.FC = () => {
         wsRef.current.close();
       }
     };
-  }, [wsPort, ethAddress]);
+  }, [wsPort, ethAddress, activePeer]);
 
   const handleUsernameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setUsername(e.target.value);
