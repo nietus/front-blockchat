@@ -35,6 +35,7 @@ import {
   TabPanel,
   TabPanels,
   Heading,
+  Switch,
 } from "@chakra-ui/react";
 import Web3 from "web3";
 import { AES, enc } from "crypto-js";
@@ -61,6 +62,7 @@ interface Message {
   decrypted?: boolean;
   encryptedSymmetricKey?: string;
   encryptedContent?: string;
+  saveToBlockchain?: boolean;
 }
 
 interface Conversation {
@@ -142,6 +144,9 @@ const Chat: React.FC = () => {
 
   // Add this new state to track when last messages were received
   const [lastMessageTimestamp, setLastMessageTimestamp] = useState<number>(0);
+
+  // Adicione este estado para armazenar a preferência do usuário
+  const [saveToBlockchain, setSaveToBlockchain] = useState(true);
 
   const wsRef = useRef<WebSocket | null>(null);
   const web3Ref = useRef<Web3 | null>(null);
@@ -424,9 +429,9 @@ const Chat: React.FC = () => {
           // Get all messages between this peer and the current user
           const peerMessages = allMessages.filter(
             (msg) =>
-              msg.sender === peerAddress ||
-              (msg.sender === ethAddress && msg.target === peerAddress) ||
-              msg.sender === ethAddress // Also include messages without explicit target
+              (msg.sender === peerAddress &&
+                (msg.target === ethAddress || !msg.target)) ||
+              (msg.sender === ethAddress && msg.target === peerAddress)
           );
 
           newConversations[peerAddress] = {
@@ -752,7 +757,14 @@ const Chat: React.FC = () => {
               // Update the conversations state
               setConversations((prevConversations) => {
                 const updatedConversations = { ...prevConversations };
-                const peerAddress = message.sender;
+                // Determine the correct conversation to update based on sender and target
+                const peerAddress =
+                  message.sender === ethAddress
+                    ? message.target || ""
+                    : message.sender;
+
+                // Only proceed if we have a valid peer address
+                if (!peerAddress) return updatedConversations;
 
                 if (updatedConversations[peerAddress]) {
                   // Check if this message already exists in the conversation
@@ -1199,7 +1211,8 @@ const Chat: React.FC = () => {
     message: string,
     sender: string,
     encrypted: boolean = false,
-    encryptedSymmetricKey?: string
+    encryptedSymmetricKey?: string,
+    target?: string | null
   ) => {
     try {
       console.log(
@@ -1211,6 +1224,7 @@ const Chat: React.FC = () => {
         content: message,
         encrypted: encrypted,
         encryptedSymmetricKey: encryptedSymmetricKey,
+        target: target || undefined, // Convert null to undefined if needed
       };
 
       const response = await fetch(
@@ -1327,6 +1341,7 @@ const Chat: React.FC = () => {
         target: activePeer || undefined,
         encryptedContent: encrypted ? contentToStore : undefined, // Store encrypted version separately
         decrypted: encrypted, // Mark as decrypted since we're using the original content
+        saveToBlockchain: saveToBlockchain, // Adicione a flag para indicar se deve ser salvo na blockchain
       };
 
       // Immediately update UI with the new message
@@ -1356,22 +1371,27 @@ const Chat: React.FC = () => {
         });
       }
 
-      // Post to blockchain after signing - Always send the encrypted content to blockchain
-      const blockchainSuccess = await postToBlockchain(
-        contentToStore,
-        ethAddress,
-        encrypted,
-        encryptedSymmetricKey
-      );
-      if (!blockchainSuccess) {
-        console.warn(
-          "Message will be sent to peers but not saved to blockchain"
+      // Post to blockchain only if saveToBlockchain is true
+      if (saveToBlockchain) {
+        const blockchainSuccess = await postToBlockchain(
+          contentToStore,
+          ethAddress,
+          encrypted,
+          encryptedSymmetricKey,
+          activePeer
         );
-      }
+        if (!blockchainSuccess) {
+          console.warn(
+            "Message will be sent to peers but not saved to blockchain"
+          );
+        }
 
-      // Always force a refresh of blockchain messages after sending to ensure consistency
-      // Use setTimeout to allow the blockchain to process the message
-      setTimeout(() => forceRefreshMessages(), 1500);
+        // Always force a refresh of blockchain messages after sending to ensure consistency
+        // Use setTimeout to allow the blockchain to process the message
+        setTimeout(() => forceRefreshMessages(), 1500);
+      } else {
+        console.log("Message sent only via P2P, not saved to blockchain");
+      }
 
       // Prepare message data for WebSocket with the signature
       const wsMessage = {
@@ -1383,6 +1403,7 @@ const Chat: React.FC = () => {
         broadcast: false,
         encrypted: encrypted,
         encryptedSymmetricKey: encryptedSymmetricKey,
+        saveToBlockchain: saveToBlockchain, // Adicionar flag ao objeto da mensagem WebSocket
       };
 
       // Send to active peer or broadcast
@@ -1571,18 +1592,35 @@ const Chat: React.FC = () => {
 
   // Switch to a different active peer
   const switchActivePeer = (peerAddress: string) => {
-    // Only allow switching to actually connected peers
+    // If not currently connected to this peer, try to connect first
     if (!actuallyConnectedPeers.includes(peerAddress)) {
-      toast({
-        title: "Not Connected",
-        description: `You're not currently connected to ${formatPeerName(
-          peerAddress
-        )}. This peer is only in your history.`,
-        status: "warning",
-        duration: 3000,
-        isClosable: true,
-      });
-      return;
+      // If the peer is in our historical peers list but not currently connected
+      if (connectedPeers.has(peerAddress)) {
+        toast({
+          title: "Connecting...",
+          description: `Attempting to connect to ${formatPeerName(
+            peerAddress
+          )}`,
+          status: "info",
+          duration: 3000,
+          isClosable: true,
+        });
+
+        // Try to establish a connection
+        connectToPeer(peerAddress);
+        return;
+      } else {
+        toast({
+          title: "Not Connected",
+          description: `You're not currently connected to ${formatPeerName(
+            peerAddress
+          )}. This peer is only in your history.`,
+          status: "warning",
+          duration: 3000,
+          isClosable: true,
+        });
+        return;
+      }
     }
 
     setActivePeer(peerAddress);
@@ -1613,7 +1651,7 @@ const Chat: React.FC = () => {
   // Function to select and display a conversation history
   const selectConversation = (peerAddress: string) => {
     // If we're selecting the active peer, just switch to it
-    if (connectedPeers.has(peerAddress)) {
+    if (actuallyConnectedPeers.includes(peerAddress)) {
       switchActivePeer(peerAddress);
       return;
     }
@@ -1623,7 +1661,15 @@ const Chat: React.FC = () => {
 
     // Load messages from this conversation
     if (conversations[peerAddress]) {
-      setMessages(conversations[peerAddress].messages);
+      // Make sure we're only showing messages that belong to this conversation
+      const filteredMessages = conversations[peerAddress].messages.filter(
+        (msg) =>
+          (msg.sender === peerAddress &&
+            (msg.target === ethAddress || !msg.target)) ||
+          (msg.sender === ethAddress && msg.target === peerAddress)
+      );
+
+      setMessages(filteredMessages);
 
       // Mark conversation as read
       setConversations((prev) => {
@@ -2542,18 +2588,53 @@ const Chat: React.FC = () => {
                       _hover={{ borderColor: "gray.500" }}
                       _focus={{ borderColor: "cyan.400" }}
                     />
-                    <Button
-                      colorScheme="cyan"
-                      onClick={handleSend}
-                      isDisabled={viewingHistory || !activePeer}
-                      width={["100%", "100%", "auto"]}
-                      _hover={{ bg: "cyan.600" }}
-                    >
-                      <HStack spacing={1}>
-                        <FiSend />
-                        <Text>Send</Text>
-                      </HStack>
-                    </Button>
+                    <HStack>
+                      <Tooltip
+                        label={
+                          saveToBlockchain
+                            ? "Mensagem será salva na blockchain"
+                            : "Apenas envio direto P2P"
+                        }
+                      >
+                        <Box>
+                          <FormControl
+                            display="flex"
+                            alignItems="center"
+                            mb={[2, 2, 0]}
+                            mr={2}
+                          >
+                            <FormLabel
+                              htmlFor="save-to-blockchain"
+                              mb="0"
+                              fontSize="xs"
+                              color="gray.400"
+                            >
+                              Blockchain
+                            </FormLabel>
+                            <Switch
+                              id="save-to-blockchain"
+                              colorScheme="green"
+                              isChecked={saveToBlockchain}
+                              onChange={(e) =>
+                                setSaveToBlockchain(e.target.checked)
+                              }
+                            />
+                          </FormControl>
+                        </Box>
+                      </Tooltip>
+                      <Button
+                        colorScheme="cyan"
+                        onClick={handleSend}
+                        isDisabled={viewingHistory || !activePeer}
+                        width={["100%", "100%", "auto"]}
+                        _hover={{ bg: "cyan.600" }}
+                      >
+                        <HStack spacing={1}>
+                          <FiSend />
+                          <Text>Send</Text>
+                        </HStack>
+                      </Button>
+                    </HStack>
                   </HStack>
                 </VStack>
               </GridItem>
