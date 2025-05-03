@@ -27,25 +27,12 @@ import {
   Grid,
   GridItem,
   Avatar,
-  Flex,
   IconButton,
-  Tab,
-  Tabs,
-  TabList,
-  TabPanel,
-  TabPanels,
-  Heading,
   Switch,
 } from "@chakra-ui/react";
 import Web3 from "web3";
 import { AES, enc } from "crypto-js";
-import {
-  FiSend,
-  FiMessageSquare,
-  FiChevronLeft,
-  FiChevronRight,
-  FiCopy,
-} from "react-icons/fi";
+import { FiSend, FiChevronLeft, FiCopy } from "react-icons/fi";
 import Menssage from "./menssage/Menssage";
 import P2PServiceDownloader from "../components/P2PServiceDownloader";
 
@@ -1167,45 +1154,6 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Generate and store encryption keys
-  const generateEncryptionKeys = async () => {
-    if (!web3Ref.current || !ethAddress) return;
-
-    try {
-      // Use MetaMask to sign a message as a seed for the encryption key
-      const seed = await window.ethereum.request({
-        method: "personal_sign",
-        params: ["BlockChat encryption key generation", ethAddress],
-      });
-
-      // Use the seed as a private key
-      const privateKey = web3Ref.current.utils.keccak256(seed);
-      localStorage.setItem("blockChatPrivateKey", privateKey);
-
-      // Generate a public key based on the private key
-      const publicKey = web3Ref.current.utils.keccak256(privateKey);
-      localStorage.setItem("blockChatPublicKey", publicKey);
-
-      toast({
-        title: "Encryption Keys Generated",
-        description:
-          "Your encryption keys have been generated and stored securely.",
-        status: "success",
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error) {
-      console.error("Error generating encryption keys:", error);
-      toast({
-        title: "Key Generation Failed",
-        description: "Failed to generate encryption keys.",
-        status: "error",
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
   // Add this function to post to blockchain
   const postToBlockchain = async (
     message: string,
@@ -1275,8 +1223,8 @@ const Chat: React.FC = () => {
 
     try {
       // Disable input while processing to prevent double-sends
-      setInput("");
       const messageContent = input.trim();
+      setInput(""); // Clear input immediately
 
       // Use a precise millisecond timestamp that will be consistent across all messages
       const preciseTimestamp = Date.now(); // This is already in milliseconds
@@ -1441,6 +1389,8 @@ const Chat: React.FC = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     try {
+      // Clear the messages display first when initiating new connection
+      setMessages([]);
       setIsConnecting(true);
 
       // First try to establish connection through relay server
@@ -1592,6 +1542,9 @@ const Chat: React.FC = () => {
 
   // Switch to a different active peer
   const switchActivePeer = (peerAddress: string) => {
+    // Always clear messages first when switching peers
+    setMessages([]);
+
     // If not currently connected to this peer, try to connect first
     if (!actuallyConnectedPeers.includes(peerAddress)) {
       // If the peer is in our historical peers list but not currently connected
@@ -1623,6 +1576,7 @@ const Chat: React.FC = () => {
       }
     }
 
+    // Update active peer state
     setActivePeer(peerAddress);
     setViewingHistory(false);
 
@@ -1641,8 +1595,6 @@ const Chat: React.FC = () => {
         }
         return updated;
       });
-    } else {
-      setMessages([]);
     }
 
     forceRefreshMessages();
@@ -1650,6 +1602,9 @@ const Chat: React.FC = () => {
 
   // Function to select and display a conversation history
   const selectConversation = (peerAddress: string) => {
+    // Always clear messages first when switching conversations
+    setMessages([]);
+
     // If we're selecting the active peer, just switch to it
     if (actuallyConnectedPeers.includes(peerAddress)) {
       switchActivePeer(peerAddress);
@@ -1689,6 +1644,9 @@ const Chat: React.FC = () => {
 
   // Go back from history view to active peer
   const goBackToCurrent = () => {
+    // Always clear messages first
+    setMessages([]);
+
     setViewingHistory(false);
     setSelectedConversation(null);
     setShowConversations(true); // Show the conversation history panel
@@ -1696,8 +1654,6 @@ const Chat: React.FC = () => {
     // Reset to current messages if there are any
     if (activePeer && conversations[activePeer]) {
       setMessages(conversations[activePeer].messages);
-    } else {
-      setMessages([]);
     }
   };
 
@@ -2011,31 +1967,6 @@ const Chat: React.FC = () => {
         duration: 2000,
         isClosable: true,
       });
-    }
-  };
-
-  // Add this to your Chat.tsx component, near the top of the component function
-  const startP2PService = async () => {
-    try {
-      console.log("Attempting to start P2P service via API...");
-      const response = await fetch("http://localhost:3001/api/start-p2p", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-
-      const data = await response.json();
-      console.log("P2P service start response:", data);
-
-      // After starting the service, connect to WebSocket
-      setTimeout(() => {
-        connectWebSocket();
-      }, 1000); // Give it a second to start up
-    } catch (error) {
-      console.error("Error starting P2P service:", error);
-      // Still try to connect to WebSocket in case the service was already running
-      connectWebSocket();
     }
   };
 
@@ -2725,14 +2656,6 @@ const Chat: React.FC = () => {
                 </FormControl>
 
                 <Divider borderColor="gray.700" />
-
-                <Button
-                  colorScheme="purple"
-                  onClick={generateEncryptionKeys}
-                  size="sm"
-                >
-                  Generate Encryption Keys
-                </Button>
               </VStack>
             </ModalBody>
 
