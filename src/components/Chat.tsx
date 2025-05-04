@@ -679,7 +679,11 @@ const Chat: React.FC = () => {
           if (now - lastMessageTimestamp > 1000) {
             // Only refresh if it's been at least 1 second
             setLastMessageTimestamp(now);
-            forceRefreshMessages();
+
+            // Only fetch blockchain messages if not explicitly marked as P2P-only message
+            if (message.saveToBlockchain !== false) {
+              forceRefreshMessages();
+            }
           }
 
           if (message.type === "system") {
@@ -704,8 +708,15 @@ const Chat: React.FC = () => {
               }
             }
 
-            // Replace the aggressive refresh sequence with a single delayed refresh
-            setTimeout(() => forceRefreshMessages(), 1000);
+            // For P2P-only messages (saveToBlockchain=false), don't try to refresh blockchain messages
+            if (message.saveToBlockchain !== false) {
+              // Replace the aggressive refresh sequence with a single delayed refresh
+              setTimeout(() => forceRefreshMessages(), 1000);
+            } else {
+              console.log(
+                "Processing P2P-only message (not saved to blockchain)"
+              );
+            }
 
             // Add the message to the conversation immediately for a responsive UI
             if (message.sender && message.content) {
@@ -718,10 +729,15 @@ const Chat: React.FC = () => {
                 encrypted: message.encrypted || false,
                 decrypted: message.decrypted || false,
                 encryptedSymmetricKey: message.encryptedSymmetricKey,
+                saveToBlockchain: message.saveToBlockchain,
+                target: message.target,
               };
 
               // Update the UI immediately if this is for the active conversation
-              if (activePeer === message.sender) {
+              if (
+                activePeer === message.sender ||
+                (message.sender === ethAddress && message.target === activePeer)
+              ) {
                 setMessages((prevMessages) => {
                   // First check if this message already exists to prevent duplicates
                   const messageExists = prevMessages.some(
