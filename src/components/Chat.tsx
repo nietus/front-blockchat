@@ -753,7 +753,14 @@ const Chat: React.FC = () => {
           if (now - lastMessageTimestamp > 1000) {
             // Only refresh if it's been at least 1 second
             setLastMessageTimestamp(now);
-            forceRefreshMessages();
+
+            // Only refresh blockchain if saveToBlockchain is true
+            if (saveToBlockchain) {
+              forceRefreshMessages();
+            } else {
+              // For P2P-only mode, only refresh P2P messages
+              refreshP2PMessages();
+            }
           }
 
           if (message.type === "system") {
@@ -778,8 +785,12 @@ const Chat: React.FC = () => {
               }
             }
 
-            // Replace the aggressive refresh sequence with a single delayed refresh
-            setTimeout(() => forceRefreshMessages(), 1000);
+            // Replace aggressive refresh with mode-aware refresh
+            if (saveToBlockchain) {
+              setTimeout(() => forceRefreshMessages(), 1000);
+            } else {
+              setTimeout(() => refreshP2PMessages(), 500);
+            }
 
             // Add the message to the conversation immediately for a responsive UI
             if (message.sender && message.content) {
@@ -1174,18 +1185,24 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Make the forceRefreshMessages function smarter about updates
+  // Modify the forceRefreshMessages function to respect the saveToBlockchain setting
   const forceRefreshMessages = async () => {
-    console.log("Forcing blockchain message refresh");
+    console.log("Forcing message refresh");
 
     try {
-      // First try to get messages from blockchain
-      await fetchBlockchainMessages(true);
+      // Only fetch blockchain messages if we're using blockchain
+      if (saveToBlockchain) {
+        console.log(
+          "Fetching blockchain messages because saveToBlockchain is true"
+        );
+        await fetchBlockchainMessages(true);
+      } else {
+        console.log(
+          "Skipping blockchain fetch because saveToBlockchain is false"
+        );
+      }
 
-      // Don't update UI unless messages have actually changed from blockchain
-      // The fetchBlockchainMessages function now handles this check
-
-      // Then request peers to send their latest messages
+      // Always send P2P refresh requests regardless of saveToBlockchain
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         try {
           const refreshRequest = {
@@ -1227,18 +1244,27 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Make the refresh interval even shorter and more reliable
+  // Update the useEffect hook to respect the saveToBlockchain setting
   useEffect(() => {
     connectWebSocket();
 
-    // Fetch blockchain messages on mount
-    forceRefreshMessages();
+    // Fetch initial data
+    if (saveToBlockchain) {
+      forceRefreshMessages();
+    } else {
+      refreshP2PMessages();
+    }
 
     // Use a single stable refresh interval instead of multiple competing ones
     const mainRefreshInterval = setInterval(() => {
       if (connected && ethAddress) {
-        console.log("Running standard refresh cycle");
-        forceRefreshMessages();
+        if (saveToBlockchain) {
+          console.log("Running standard refresh cycle with blockchain");
+          forceRefreshMessages();
+        } else {
+          console.log("Running P2P-only refresh cycle (skipping blockchain)");
+          refreshP2PMessages();
+        }
       }
     }, 5000); // Use a single 5-second interval that's less aggressive
 
@@ -1263,7 +1289,13 @@ const Chat: React.FC = () => {
       if (connected && ethAddress) {
         console.log("Window focus gained - refreshing messages");
         // Add a small delay to ensure the UI is ready
-        setTimeout(() => forceRefreshMessages(), 300);
+        setTimeout(() => {
+          if (saveToBlockchain) {
+            forceRefreshMessages();
+          } else {
+            refreshP2PMessages();
+          }
+        }, 300);
       }
     };
     window.addEventListener("focus", handleFocus);
@@ -1280,7 +1312,7 @@ const Chat: React.FC = () => {
         wsRef.current.close();
       }
     };
-  }, [wsPort, ethAddress, activePeer]);
+  }, [wsPort, ethAddress, activePeer, saveToBlockchain]);
 
   const handleUsernameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setUsername(e.target.value);
