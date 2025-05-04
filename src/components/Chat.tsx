@@ -91,6 +91,60 @@ const STORAGE_KEYS = {
   PUBLIC_IP: "blockchat_public_ip", // Add new key for public IP
 };
 
+// Add this new helper function near the getPublicIpAddress function
+const formatAddressForConnection = (address: string, port: number): string => {
+  // Check if this is an IPv6 address (contains :)
+  if (address.includes(":")) {
+    // IPv6 addresses in URLs need to be wrapped in square brackets
+    return `[${address}]:${port}`;
+  }
+  // Regular IPv4 address
+  return `${address}:${port}`;
+};
+
+// Modify the getPublicIpAddress function to be more robust
+const getPublicIpAddress = async (): Promise<string> => {
+  try {
+    // Try with ipify service first
+    const response = await fetch("https://api.ipify.org?format=json");
+    const data = await response.json();
+    console.log("Retrieved public IP:", data.ip);
+
+    // Store IP in localStorage for future use
+    localStorage.setItem(STORAGE_KEYS.PUBLIC_IP, data.ip);
+    return data.ip;
+  } catch (error) {
+    console.error("Error getting public IP from ipify:", error);
+
+    // Try with ipinfo as a backup
+    try {
+      const backupResponse = await fetch("https://ipinfo.io/json");
+      const backupData = await backupResponse.json();
+      if (backupData.ip) {
+        console.log("Retrieved public IP from backup service:", backupData.ip);
+        localStorage.setItem(STORAGE_KEYS.PUBLIC_IP, backupData.ip);
+        return backupData.ip;
+      }
+    } catch (backupError) {
+      console.error(
+        "Error getting public IP from backup service:",
+        backupError
+      );
+    }
+
+    // Fallback to any stored IP from previous sessions
+    const storedIp = localStorage.getItem(STORAGE_KEYS.PUBLIC_IP);
+    if (storedIp) {
+      console.log("Using stored public IP:", storedIp);
+      return storedIp;
+    }
+
+    // Return a placeholder if we can't get the IP
+    console.warn("Returning default IPv4 address as fallback");
+    return "0.0.0.0";
+  }
+};
+
 const Chat: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -514,9 +568,10 @@ const Chat: React.FC = () => {
 
       // First get the public IP address
       const publicIp = await getPublicIpAddress();
+      const formattedAddress = formatAddressForConnection(publicIp, port);
 
       console.log(
-        `Registering address ${finalAddress} with relay server using P2P port ${port} and IP ${publicIp}...`
+        `Registering address ${finalAddress} with relay server using P2P port ${port} and IP ${publicIp} (formatted: ${formattedAddress})...`
       );
       const response = await fetch(
         "https://relay-server-nzhu.onrender.com/store",
@@ -527,7 +582,7 @@ const Chat: React.FC = () => {
           },
           body: JSON.stringify({
             sender_id: finalAddress,
-            p2p_addr: `${publicIp}:${port}`,
+            p2p_addr: formattedAddress,
           }),
         }
       );
