@@ -465,14 +465,19 @@ const Chat: React.FC = () => {
           }
         }
 
+        // Filter out invalid peer addresses before creating conversations
+        const validHistoricalPeers = Array.from(historicalPeers).filter(
+          (peer) => peer && peer.startsWith("0x") && peer.length === 42
+        );
+
         // Sort all messages by timestamp
         allMessages.sort((a, b) => a.timestamp - b.timestamp);
 
         // Build conversations from blockchain data
         const newConversations: Record<string, Conversation> = {};
 
-        // Group messages by peer
-        historicalPeers.forEach((peerAddress) => {
+        // Group messages by peer (using only valid peers)
+        validHistoricalPeers.forEach((peerAddress) => {
           // Get all messages between this peer and the current user
           const peerMessages = allMessages.filter(
             (msg) =>
@@ -514,7 +519,7 @@ const Chat: React.FC = () => {
         });
 
         // Update connected peers
-        setConnectedPeers(new Set(historicalPeers));
+        setConnectedPeers(new Set(validHistoricalPeers));
 
         // IMPORTANT: Always update current messages view if we have an active peer, but only if there were changes
         if (activePeer && newConversations[activePeer]) {
@@ -539,9 +544,9 @@ const Chat: React.FC = () => {
         }
 
         console.log(
-          `Loaded ${historicalPeers.size} peer conversations from blockchain`
+          `Loaded ${validHistoricalPeers.length} peer conversations from blockchain`
         );
-        return Array.from(historicalPeers);
+        return validHistoricalPeers;
       }
     } catch (error) {
       console.error("Error fetching blockchain messages:", error);
@@ -835,8 +840,14 @@ const Chat: React.FC = () => {
                     ? message.target || ""
                     : message.sender;
 
-                // Only proceed if we have a valid peer address
-                if (!peerAddress) return updatedConversations;
+                // Only proceed if we have a valid peer address (Ethereum format)
+                if (
+                  !peerAddress ||
+                  !peerAddress.startsWith("0x") ||
+                  peerAddress.length !== 42
+                ) {
+                  return updatedConversations;
+                }
 
                 if (updatedConversations[peerAddress]) {
                   // Check if this message already exists in the conversation
@@ -955,8 +966,12 @@ const Chat: React.FC = () => {
               // No need to implement response logic here as regular message handling is sufficient
             }
 
-            // Process the message immediately without waiting for blockchain
-            if (message.sender && message.content) {
+            // Process the message immediately ONLY IF IT'S A P2P_MESSAGE, not a refresh request
+            if (
+              message.type === "p2p_message" &&
+              message.sender &&
+              message.content
+            ) {
               // First try to decrypt if encrypted
               if (message.encrypted && message.encryptedSymmetricKey) {
                 try {
@@ -1022,8 +1037,14 @@ const Chat: React.FC = () => {
                     ? message.target || ""
                     : message.sender;
 
-                // Only proceed if we have a valid peer address
-                if (!peerAddress) return updatedConversations;
+                // Only proceed if we have a valid peer address (Ethereum format)
+                if (
+                  !peerAddress ||
+                  !peerAddress.startsWith("0x") ||
+                  peerAddress.length !== 42
+                ) {
+                  return updatedConversations;
+                }
 
                 if (updatedConversations[peerAddress]) {
                   // Check if this message already exists in the conversation
