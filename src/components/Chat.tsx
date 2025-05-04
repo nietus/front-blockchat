@@ -753,6 +753,17 @@ const Chat: React.FC = () => {
           const message = JSON.parse(event.data);
           console.log("Received message:", message);
 
+          // Give higher priority to actual P2P messages (not refresh requests)
+          if (message.type === "p2p_message") {
+            console.log("Processing P2P message immediately:", message);
+
+            // Immediately process P2P messages
+            await processPeerMessage(message);
+
+            // No need to trigger a full refresh as we've already handled this message
+            return;
+          }
+
           // Don't trigger immediate refresh for every message - throttle it
           const now = Date.now();
           if (now - lastMessageTimestamp > 1000) {
@@ -764,7 +775,14 @@ const Chat: React.FC = () => {
               forceRefreshMessages();
             } else {
               // For P2P-only mode, only refresh P2P messages
-              refreshP2PMessages();
+              // BUT DON'T trigger P2P refresh on EVERY message - especially refresh requests
+              // This would create an infinite cascade of refresh requests
+              if (
+                message.type !== "refresh_request" &&
+                message.type !== "p2p_refresh_request"
+              ) {
+                refreshP2PMessages();
+              }
             }
           }
 
@@ -963,7 +981,9 @@ const Chat: React.FC = () => {
                 "Processing P2P refresh request from:",
                 message.sender
               );
-              // No need to implement response logic here as regular message handling is sufficient
+              // Don't flood back with refresh requests in response to a refresh request
+              // This prevents an infinite loop of refresh requests between peers
+              return;
             }
 
             // Process the message immediately ONLY IF IT'S A P2P_MESSAGE, not a refresh request
@@ -972,112 +992,8 @@ const Chat: React.FC = () => {
               message.sender &&
               message.content
             ) {
-              // First try to decrypt if encrypted
-              if (message.encrypted && message.encryptedSymmetricKey) {
-                try {
-                  const decryptedContent = await decryptMessage(
-                    message.content,
-                    message.encryptedSymmetricKey,
-                    message.sender
-                  );
-
-                  if (decryptedContent) {
-                    message.content = decryptedContent;
-                    message.decrypted = true;
-                    message.encryptedContent = message.content;
-                  }
-                } catch (error) {
-                  console.error(
-                    "Failed to decrypt incoming P2P message:",
-                    error
-                  );
-                }
-              }
-
-              // Create the message object
-              const newMessage = {
-                sender: message.sender,
-                content: message.content,
-                timestamp: message.timestamp || Date.now(),
-                confirmed: true,
-                signature: message.signature,
-                encrypted: message.encrypted || false,
-                decrypted: message.decrypted || false,
-                encryptedSymmetricKey: message.encryptedSymmetricKey,
-                p2pOnly: message.p2pOnly || false,
-              };
-
-              // Update the UI immediately if this is for the active conversation
-              if (activePeer === message.sender) {
-                setMessages((prevMessages) => {
-                  // Check if this message already exists to prevent duplicates
-                  const messageExists = prevMessages.some(
-                    (msg) =>
-                      msg.signature === newMessage.signature &&
-                      msg.timestamp === newMessage.timestamp
-                  );
-
-                  if (messageExists) return prevMessages;
-                  return [...prevMessages, newMessage];
-                });
-
-                // Scroll to bottom
-                if (chatContainerRef.current) {
-                  chatContainerRef.current.scrollTop =
-                    chatContainerRef.current.scrollHeight;
-                }
-              }
-
-              // Update the conversations state
-              setConversations((prevConversations) => {
-                const updatedConversations = { ...prevConversations };
-                // Determine the correct conversation to update based on sender and target
-                const peerAddress =
-                  message.sender === ethAddress
-                    ? message.target || ""
-                    : message.sender;
-
-                // Only proceed if we have a valid peer address (Ethereum format)
-                if (
-                  !peerAddress ||
-                  !peerAddress.startsWith("0x") ||
-                  peerAddress.length !== 42
-                ) {
-                  return updatedConversations;
-                }
-
-                if (updatedConversations[peerAddress]) {
-                  // Check if this message already exists in the conversation
-                  const messageExists = updatedConversations[
-                    peerAddress
-                  ].messages.some(
-                    (msg) =>
-                      msg.signature === newMessage.signature &&
-                      msg.timestamp === newMessage.timestamp
-                  );
-
-                  if (!messageExists) {
-                    updatedConversations[peerAddress] = {
-                      ...updatedConversations[peerAddress],
-                      messages: [
-                        ...updatedConversations[peerAddress].messages,
-                        newMessage,
-                      ],
-                      unreadCount:
-                        activePeer !== peerAddress
-                          ? updatedConversations[peerAddress].unreadCount + 1
-                          : 0,
-                    };
-                  }
-                } else {
-                  updatedConversations[peerAddress] = {
-                    peerAddress,
-                    messages: [newMessage],
-                    unreadCount: activePeer !== peerAddress ? 1 : 0,
-                  };
-                }
-                return updatedConversations;
-              });
+              // Use the dedicated message processing function
+              await processPeerMessage(message);
             }
           }
         } catch (e) {
@@ -1287,7 +1203,7 @@ const Chat: React.FC = () => {
           refreshP2PMessages();
         }
       }
-    }, 5000); // Use a single 5-second interval that's less aggressive
+    }, 10000); // Increased from 5 seconds to 10 seconds for the main refresh
 
     // Add a P2P-specific refresh interval that's faster for better real-time feeling
     const p2pRefreshInterval = setInterval(() => {
@@ -1300,7 +1216,7 @@ const Chat: React.FC = () => {
         console.log("Running P2P-only refresh cycle");
         refreshP2PMessages();
       }
-    }, 2000); // Faster 2-second interval just for P2P messages
+    }, 5000); // Changed from 2000 to 5000ms (5 seconds) to reduce frequency
 
     // Store the P2P timer reference for cleanup
     setP2pRefreshTimer(p2pRefreshInterval);
@@ -1672,17 +1588,13 @@ const Chat: React.FC = () => {
           // Send the initial message
           wsRef.current.send(JSON.stringify(peerMessage));
 
-          // Then send 3 additional copies with increasing delays
-          const sendRetries = [100, 300, 800]; // Exponential backoff in milliseconds
-
-          for (let i = 0; i < sendRetries.length; i++) {
-            setTimeout(() => {
-              if (wsRef.current?.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify(peerMessage));
-                console.log(`Sent redundant P2P message (attempt ${i + 1})`);
-              }
-            }, sendRetries[i]);
-          }
+          // Then send one additional copy with a delay for reliability
+          setTimeout(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify(peerMessage));
+              console.log(`Sent redundant P2P message (attempt 1)`);
+            }
+          }, 500);
         } else {
           // For blockchain messages, just send once
           wsRef.current.send(JSON.stringify(peerMessage));
@@ -2350,28 +2262,172 @@ const Chat: React.FC = () => {
       return;
     }
 
+    // Use a timestamp to throttle requests
+    const now = Date.now();
+    const lastRefreshKey = `last_p2p_refresh_${activePeer}`;
+    const lastRefreshStr = sessionStorage.getItem(lastRefreshKey);
+    const lastRefresh = lastRefreshStr ? parseInt(lastRefreshStr) : 0;
+
+    // Don't send a refresh request if we've sent one in the last 3 seconds
+    if (now - lastRefresh < 3000) {
+      console.log("Skipping P2P refresh request - too soon since last request");
+      return;
+    }
+
+    // Update the last refresh timestamp
+    sessionStorage.setItem(lastRefreshKey, now.toString());
+
     try {
       // Send a special P2P refresh request to the active peer
       const refreshRequest = {
         type: "p2p_refresh_request",
         sender: ethAddress,
         target: activePeer,
-        timestamp: Date.now(),
+        timestamp: now,
         content: "P2P message refresh request",
       };
 
       wsRef.current.send(JSON.stringify(refreshRequest));
       console.log(`Sent P2P refresh request to active peer: ${activePeer}`);
 
-      // For better reliability, send it twice with a small delay
+      // Send one more request with a delay for reliability
       setTimeout(() => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify(refreshRequest));
         }
-      }, 300);
+      }, 500);
     } catch (error) {
       console.error("Error sending P2P refresh request:", error);
     }
+  };
+
+  // Add message update debounce logic
+  useEffect(() => {
+    // When switching active peer, ensure we're not throttling the first update
+    sessionStorage.removeItem(`last_p2p_refresh_${activePeer}`);
+
+    // Also clear any other refresh keys for inactive peers periodically
+    const cleanupInterval = setInterval(() => {
+      if (activePeer) {
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i);
+          if (
+            key &&
+            key.startsWith("last_p2p_refresh_") &&
+            !key.includes(activePeer)
+          ) {
+            sessionStorage.removeItem(key);
+          }
+        }
+      }
+    }, 60000); // Clean up every minute
+
+    return () => {
+      clearInterval(cleanupInterval);
+    };
+  }, [activePeer]);
+
+  // Add a helper function to process peer messages consistently
+  const processPeerMessage = async (message: any) => {
+    // First try to decrypt if encrypted
+    if (message.encrypted && message.encryptedSymmetricKey) {
+      try {
+        const decryptedContent = await decryptMessage(
+          message.content,
+          message.encryptedSymmetricKey,
+          message.sender
+        );
+
+        if (decryptedContent) {
+          message.content = decryptedContent;
+          message.decrypted = true;
+          message.encryptedContent = message.content;
+        }
+      } catch (error) {
+        console.error("Failed to decrypt incoming P2P message:", error);
+      }
+    }
+
+    // Create the message object
+    const newMessage: Message = {
+      sender: message.sender,
+      content: message.content,
+      timestamp: message.timestamp || Date.now(),
+      confirmed: true,
+      signature: message.signature,
+      encrypted: message.encrypted || false,
+      decrypted: message.decrypted || false,
+      encryptedSymmetricKey: message.encryptedSymmetricKey,
+      p2pOnly: message.p2pOnly || false,
+    };
+
+    // Update the UI immediately if this is for the active conversation
+    if (activePeer === message.sender) {
+      setMessages((prevMessages) => {
+        // Check if this message already exists to prevent duplicates
+        const messageExists = prevMessages.some(
+          (msg) =>
+            msg.signature === newMessage.signature &&
+            msg.timestamp === newMessage.timestamp
+        );
+
+        if (messageExists) return prevMessages;
+        return [...prevMessages, newMessage];
+      });
+
+      // Scroll to bottom
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop =
+          chatContainerRef.current.scrollHeight;
+      }
+    }
+
+    // Update the conversations state
+    setConversations((prevConversations) => {
+      const updatedConversations = { ...prevConversations };
+      // Determine the correct conversation to update based on sender and target
+      const peerAddress =
+        message.sender === ethAddress ? message.target || "" : message.sender;
+
+      // Only proceed if we have a valid peer address (Ethereum format)
+      if (
+        !peerAddress ||
+        !peerAddress.startsWith("0x") ||
+        peerAddress.length !== 42
+      ) {
+        return updatedConversations;
+      }
+
+      if (updatedConversations[peerAddress]) {
+        // Check if this message already exists in the conversation
+        const messageExists = updatedConversations[peerAddress].messages.some(
+          (msg) =>
+            msg.signature === newMessage.signature &&
+            msg.timestamp === newMessage.timestamp
+        );
+
+        if (!messageExists) {
+          updatedConversations[peerAddress] = {
+            ...updatedConversations[peerAddress],
+            messages: [
+              ...updatedConversations[peerAddress].messages,
+              newMessage,
+            ],
+            unreadCount:
+              activePeer !== peerAddress
+                ? updatedConversations[peerAddress].unreadCount + 1
+                : 0,
+          };
+        }
+      } else {
+        updatedConversations[peerAddress] = {
+          peerAddress,
+          messages: [newMessage],
+          unreadCount: activePeer !== peerAddress ? 1 : 0,
+        };
+      }
+      return updatedConversations;
+    });
   };
 
   return (
