@@ -50,6 +50,7 @@ interface Message {
   encryptedSymmetricKey?: string;
   encryptedContent?: string;
   saveToBlockchain?: boolean;
+  p2pOnly?: boolean; // New field to identify P2P-only messages
 }
 
 interface Conversation {
@@ -152,6 +153,11 @@ const Chat: React.FC = () => {
     Record<string, number>
   >({});
   const decryptionNotificationTimeoutRef = useRef<number | undefined>();
+
+  // Add a dedicated state variable to track P2P refresh interval
+  const [p2pRefreshTimer, setP2pRefreshTimer] = useState<NodeJS.Timeout | null>(
+    null
+  );
 
   // Save values to localStorage when they change
   useEffect(() => {
@@ -614,11 +620,23 @@ const Chat: React.FC = () => {
         console.log("Sending initial WebSocket registration:", registerMsg);
         ws.send(JSON.stringify(registerMsg));
 
+        // Add more explicit registration message for P2P network
+        const p2pRegisterMsg = {
+          type: "p2p_register",
+          content: "Register ethereum address for P2P network",
+          eth_address: ethAddress,
+          sender: ethAddress,
+          timestamp: Date.now(),
+        };
+        console.log("Sending P2P registration:", p2pRegisterMsg);
+        ws.send(JSON.stringify(p2pRegisterMsg));
+
         // Send follow-up registrations with increasing delays
         setTimeout(() => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             console.log("Sending follow-up registration (attempt 1)");
             wsRef.current.send(JSON.stringify(registerMsg));
+            wsRef.current.send(JSON.stringify(p2pRegisterMsg));
           }
         }, 500);
 
@@ -626,6 +644,7 @@ const Chat: React.FC = () => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             console.log("Sending follow-up registration (attempt 2)");
             wsRef.current.send(JSON.stringify(registerMsg));
+            wsRef.current.send(JSON.stringify(p2pRegisterMsg));
           }
         }, 1500);
 
@@ -679,11 +698,7 @@ const Chat: React.FC = () => {
           if (now - lastMessageTimestamp > 1000) {
             // Only refresh if it's been at least 1 second
             setLastMessageTimestamp(now);
-
-            // Only fetch blockchain messages if not explicitly marked as P2P-only message
-            if (message.saveToBlockchain !== false) {
-              forceRefreshMessages();
-            }
+            forceRefreshMessages();
           }
 
           if (message.type === "system") {
@@ -708,15 +723,8 @@ const Chat: React.FC = () => {
               }
             }
 
-            // For P2P-only messages (saveToBlockchain=false), don't try to refresh blockchain messages
-            if (message.saveToBlockchain !== false) {
-              // Replace the aggressive refresh sequence with a single delayed refresh
-              setTimeout(() => forceRefreshMessages(), 1000);
-            } else {
-              console.log(
-                "Processing P2P-only message (not saved to blockchain)"
-              );
-            }
+            // Replace the aggressive refresh sequence with a single delayed refresh
+            setTimeout(() => forceRefreshMessages(), 1000);
 
             // Add the message to the conversation immediately for a responsive UI
             if (message.sender && message.content) {
@@ -729,15 +737,10 @@ const Chat: React.FC = () => {
                 encrypted: message.encrypted || false,
                 decrypted: message.decrypted || false,
                 encryptedSymmetricKey: message.encryptedSymmetricKey,
-                saveToBlockchain: message.saveToBlockchain,
-                target: message.target,
               };
 
               // Update the UI immediately if this is for the active conversation
-              if (
-                activePeer === message.sender ||
-                (message.sender === ethAddress && message.target === activePeer)
-              ) {
+              if (activePeer === message.sender) {
                 setMessages((prevMessages) => {
                   // First check if this message already exists to prevent duplicates
                   const messageExists = prevMessages.some(
@@ -867,6 +870,128 @@ const Chat: React.FC = () => {
 
             // Always refresh on pings/pongs for more reliable updates
             forceRefreshMessages();
+          } else if (
+            message.type === "p2p_refresh_request" ||
+            message.type === "p2p_message"
+          ) {
+            // Special fast path for P2P-only messages
+            console.log("Received P2P-specific message:", message);
+
+            // Handle p2p_refresh_request (respond with any pending P2P-only messages)
+            if (
+              message.type === "p2p_refresh_request" &&
+              message.target === ethAddress
+            ) {
+              console.log(
+                "Processing P2P refresh request from:",
+                message.sender
+              );
+              // No need to implement response logic here as regular message handling is sufficient
+            }
+
+            // Process the message immediately without waiting for blockchain
+            if (message.sender && message.content) {
+              // First try to decrypt if encrypted
+              if (message.encrypted && message.encryptedSymmetricKey) {
+                try {
+                  const decryptedContent = await decryptMessage(
+                    message.content,
+                    message.encryptedSymmetricKey,
+                    message.sender
+                  );
+
+                  if (decryptedContent) {
+                    message.content = decryptedContent;
+                    message.decrypted = true;
+                    message.encryptedContent = message.content;
+                  }
+                } catch (error) {
+                  console.error(
+                    "Failed to decrypt incoming P2P message:",
+                    error
+                  );
+                }
+              }
+
+              // Create the message object
+              const newMessage = {
+                sender: message.sender,
+                content: message.content,
+                timestamp: message.timestamp || Date.now(),
+                confirmed: true,
+                signature: message.signature,
+                encrypted: message.encrypted || false,
+                decrypted: message.decrypted || false,
+                encryptedSymmetricKey: message.encryptedSymmetricKey,
+                p2pOnly: message.p2pOnly || false,
+              };
+
+              // Update the UI immediately if this is for the active conversation
+              if (activePeer === message.sender) {
+                setMessages((prevMessages) => {
+                  // Check if this message already exists to prevent duplicates
+                  const messageExists = prevMessages.some(
+                    (msg) =>
+                      msg.signature === newMessage.signature &&
+                      msg.timestamp === newMessage.timestamp
+                  );
+
+                  if (messageExists) return prevMessages;
+                  return [...prevMessages, newMessage];
+                });
+
+                // Scroll to bottom
+                if (chatContainerRef.current) {
+                  chatContainerRef.current.scrollTop =
+                    chatContainerRef.current.scrollHeight;
+                }
+              }
+
+              // Update the conversations state
+              setConversations((prevConversations) => {
+                const updatedConversations = { ...prevConversations };
+                // Determine the correct conversation to update based on sender and target
+                const peerAddress =
+                  message.sender === ethAddress
+                    ? message.target || ""
+                    : message.sender;
+
+                // Only proceed if we have a valid peer address
+                if (!peerAddress) return updatedConversations;
+
+                if (updatedConversations[peerAddress]) {
+                  // Check if this message already exists in the conversation
+                  const messageExists = updatedConversations[
+                    peerAddress
+                  ].messages.some(
+                    (msg) =>
+                      msg.signature === newMessage.signature &&
+                      msg.timestamp === newMessage.timestamp
+                  );
+
+                  if (!messageExists) {
+                    updatedConversations[peerAddress] = {
+                      ...updatedConversations[peerAddress],
+                      messages: [
+                        ...updatedConversations[peerAddress].messages,
+                        newMessage,
+                      ],
+                      unreadCount:
+                        activePeer !== peerAddress
+                          ? updatedConversations[peerAddress].unreadCount + 1
+                          : 0,
+                    };
+                  }
+                } else {
+                  updatedConversations[peerAddress] = {
+                    peerAddress,
+                    messages: [newMessage],
+                    unreadCount: activePeer !== peerAddress ? 1 : 0,
+                  };
+                }
+                return updatedConversations;
+              });
+            }
           }
         } catch (e) {
           console.log("Non-JSON server message:", event.data);
@@ -1062,6 +1187,22 @@ const Chat: React.FC = () => {
       }
     }, 5000); // Use a single 5-second interval that's less aggressive
 
+    // Add a P2P-specific refresh interval that's faster for better real-time feeling
+    const p2pRefreshInterval = setInterval(() => {
+      if (
+        connected &&
+        ethAddress &&
+        activePeer &&
+        actuallyConnectedPeers.includes(activePeer)
+      ) {
+        console.log("Running P2P-only refresh cycle");
+        refreshP2PMessages();
+      }
+    }, 2000); // Faster 2-second interval just for P2P messages
+
+    // Store the P2P timer reference for cleanup
+    setP2pRefreshTimer(p2pRefreshInterval);
+
     // Add a window focus handler that's more reliable
     const handleFocus = () => {
       if (connected && ethAddress) {
@@ -1074,6 +1215,7 @@ const Chat: React.FC = () => {
 
     return () => {
       clearInterval(mainRefreshInterval);
+      if (p2pRefreshTimer) clearInterval(p2pRefreshTimer);
       window.removeEventListener("focus", handleFocus);
 
       if (reconnectTimeoutRef.current) {
@@ -1305,7 +1447,8 @@ const Chat: React.FC = () => {
         target: activePeer || undefined,
         encryptedContent: encrypted ? contentToStore : undefined, // Store encrypted version separately
         decrypted: encrypted, // Mark as decrypted since we're using the original content
-        saveToBlockchain: saveToBlockchain, // Adicione a flag para indicar se deve ser salvo na blockchain
+        saveToBlockchain: saveToBlockchain, // Add the flag to indicate if it should be saved in the blockchain
+        p2pOnly: !saveToBlockchain, // Mark as P2P-only if not saving to blockchain
       };
 
       // Immediately update UI with the new message
@@ -1355,6 +1498,43 @@ const Chat: React.FC = () => {
         setTimeout(() => forceRefreshMessages(), 1500);
       } else {
         console.log("Message sent only via P2P, not saved to blockchain");
+
+        // For P2P-only messages, send a direct confirmation to UI to ensure responsive UX
+        // If we have a WebSocket connection, immediately attempt P2P delivery
+        // without waiting for the blockchain
+        if (
+          wsRef.current &&
+          activePeer &&
+          actuallyConnectedPeers.includes(activePeer)
+        ) {
+          console.log("Sending P2P-only message to: ", activePeer);
+
+          // Make sure we set confirmed=true for UI updating
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.timestamp === preciseTimestamp
+                ? { ...msg, confirmed: true }
+                : msg
+            )
+          );
+
+          // Also update in the conversations state
+          if (activePeer) {
+            setConversations((prevConvs) => {
+              const newConvs = { ...prevConvs };
+              if (newConvs[activePeer]) {
+                newConvs[activePeer].messages = newConvs[
+                  activePeer
+                ].messages.map((msg) =>
+                  msg.timestamp === preciseTimestamp
+                    ? { ...msg, confirmed: true }
+                    : msg
+                );
+              }
+              return newConvs;
+            });
+          }
+        }
       }
 
       // Prepare message data for WebSocket with the signature
@@ -1367,7 +1547,8 @@ const Chat: React.FC = () => {
         broadcast: false,
         encrypted: encrypted,
         encryptedSymmetricKey: encryptedSymmetricKey,
-        saveToBlockchain: saveToBlockchain, // Adicionar flag ao objeto da mensagem WebSocket
+        saveToBlockchain: saveToBlockchain, // Add flag to the WebSocket message object
+        p2pOnly: !saveToBlockchain, // Add p2pOnly flag based on saveToBlockchain setting
       };
 
       // Send to active peer or broadcast
@@ -1377,7 +1558,27 @@ const Chat: React.FC = () => {
           target: activePeer,
           broadcast: false,
         };
-        wsRef.current.send(JSON.stringify(peerMessage));
+
+        // For P2P-only messages, implement multiple send attempts for better reliability
+        if (!saveToBlockchain && actuallyConnectedPeers.includes(activePeer)) {
+          // Send the initial message
+          wsRef.current.send(JSON.stringify(peerMessage));
+
+          // Then send 3 additional copies with increasing delays
+          const sendRetries = [100, 300, 800]; // Exponential backoff in milliseconds
+
+          for (let i = 0; i < sendRetries.length; i++) {
+            setTimeout(() => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify(peerMessage));
+                console.log(`Sent redundant P2P message (attempt ${i + 1})`);
+              }
+            }, sendRetries[i]);
+          }
+        } else {
+          // For blockchain messages, just send once
+          wsRef.current.send(JSON.stringify(peerMessage));
+        }
       } else {
         wsMessage.broadcast = true;
         wsRef.current.send(JSON.stringify(wsMessage));
@@ -2031,6 +2232,40 @@ const Chat: React.FC = () => {
     }
   };
 
+  // Add a new function for P2P-only message refreshing
+  const refreshP2PMessages = async () => {
+    if (
+      !wsRef.current ||
+      wsRef.current.readyState !== WebSocket.OPEN ||
+      !activePeer
+    ) {
+      return;
+    }
+
+    try {
+      // Send a special P2P refresh request to the active peer
+      const refreshRequest = {
+        type: "p2p_refresh_request",
+        sender: ethAddress,
+        target: activePeer,
+        timestamp: Date.now(),
+        content: "P2P message refresh request",
+      };
+
+      wsRef.current.send(JSON.stringify(refreshRequest));
+      console.log(`Sent P2P refresh request to active peer: ${activePeer}`);
+
+      // For better reliability, send it twice with a small delay
+      setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify(refreshRequest));
+        }
+      }, 300);
+    } catch (error) {
+      console.error("Error sending P2P refresh request:", error);
+    }
+  };
+
   return (
     <Box height="100vh" display="flex" flexDirection="column">
       <P2PServiceDownloader connectedStatus={connected} />
@@ -2491,6 +2726,23 @@ const Chat: React.FC = () => {
                               formatTime={formatMessageDate}
                               formatPeerName={formatPeerName}
                             />
+                            {msg.p2pOnly && (
+                              <Badge
+                                ml={1}
+                                colorScheme="purple"
+                                fontSize="xs"
+                                position="absolute"
+                                bottom="0"
+                                right={
+                                  msg.sender === ethAddress ? "10px" : "auto"
+                                }
+                                left={
+                                  msg.sender !== ethAddress ? "10px" : "auto"
+                                }
+                              >
+                                P2P only
+                              </Badge>
+                            )}
                           </ListItem>
                         ))}
                       </List>
