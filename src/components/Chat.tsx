@@ -779,6 +779,26 @@ const Chat: React.FC = () => {
             return;
           }
 
+          // Add handler for mode change rejection messages
+          if (message.type === "mode_change_rejected") {
+            console.log("Mode change rejected:", message);
+
+            // Update our UI state to stay in sync with the backend
+            if (message.using_blockchain !== undefined) {
+              setSaveToBlockchain(message.using_blockchain);
+            }
+
+            toast({
+              title: "Mode Change Rejected",
+              description: message.content,
+              status: "warning",
+              duration: 3000,
+              isClosable: true,
+            });
+
+            return;
+          }
+
           if (message.type === "heartbeat") {
             // Handle heartbeat silently, no need for user notification
             return;
@@ -2487,11 +2507,46 @@ const Chat: React.FC = () => {
   // Replace the entire handleModeSwitch function with a better implementation
   const handleModeSwitch = (newSaveToBlockchain: boolean) => {
     try {
+      // Check if there's any pending mode switch in progress by comparing with the current state
+      if (newSaveToBlockchain === saveToBlockchain) {
+        console.log(
+          "Mode already set to",
+          newSaveToBlockchain ? "blockchain" : "P2P-only"
+        );
+        return;
+      }
+
+      // Track the last mode change timestamp to prevent rapid switching
+      const now = Date.now();
+      const lastModeChange = parseInt(
+        localStorage.getItem("blockchat_last_mode_change") || "0"
+      );
+      const timeSinceLastChange = now - lastModeChange;
+
+      // Enforce a 3-second cooldown between mode changes
+      if (timeSinceLastChange < 3000) {
+        console.log(
+          `Mode change rejected - too soon (${timeSinceLastChange}ms since last change)`
+        );
+        toast({
+          title: "Please wait",
+          description: "Please wait a moment before changing modes again",
+          status: "warning",
+          duration: 2000,
+          isClosable: true,
+        });
+        return;
+      }
+
+      // Update local state
       setSaveToBlockchain(newSaveToBlockchain);
       localStorage.setItem(
         STORAGE_KEYS.SAVE_TO_BLOCKCHAIN,
         newSaveToBlockchain.toString()
       );
+
+      // Update timestamp of last change
+      localStorage.setItem("blockchat_last_mode_change", now.toString());
 
       // Check if websocket is available
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -2509,29 +2564,34 @@ const Chat: React.FC = () => {
         content: `Switching to ${
           newSaveToBlockchain ? "blockchain" : "P2P-only"
         } mode`,
-        timestamp: Date.now(),
+        timestamp: now,
       };
 
       console.log("Sending mode change notification:", modeMessage);
       wsRef.current.send(JSON.stringify(modeMessage));
 
       // In P2P-only mode, let the backend know we need to use NAT ports
-      // The backend knows the correct NAT-negotiated port from STUN
+      // But add a delay to avoid overwhelming the server with multiple requests
       if (!newSaveToBlockchain) {
-        const natModeMessage = {
-          type: "p2p_use_nat_port", // Corrected to match what backend expects
-          sender: ethAddress,
-          target: ethAddress, // For own address
-          nat_address: "", // Backend will fill this in with the correct NAT address
-          content: "Request to use NAT-negotiated port for P2P-only mode",
-          timestamp: Date.now(),
-        };
+        // Wait for the mode change to complete before sending NAT request
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            const natPortMessage = {
+              type: "p2p_use_nat_port",
+              sender: ethAddress,
+              target: ethAddress,
+              nat_address: "",
+              content: "Request to use NAT-negotiated port for P2P-only mode",
+              timestamp: Date.now(),
+            };
 
-        console.log(
-          "Requesting NAT port usage for P2P-only mode:",
-          natModeMessage
-        );
-        wsRef.current.send(JSON.stringify(natModeMessage));
+            console.log(
+              "Requesting NAT port usage for P2P-only mode:",
+              natPortMessage
+            );
+            wsRef.current.send(JSON.stringify(natPortMessage));
+          }
+        }, 1000); // Delay NAT request by 1 second
       }
 
       // Add a visual indicator to the user that mode is changing
