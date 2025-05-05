@@ -655,56 +655,93 @@ const Chat: React.FC = () => {
         setConnected(true);
         setIsConnecting(false);
 
-        // Register with the P2P network
-        const registerMessage = {
-          type: "p2p_register",
-          eth_address: ethAddress,
-        };
-        console.log("Registering with P2P network:", registerMessage);
-        ws.send(JSON.stringify(registerMessage));
+        // Ensure we have a valid Ethereum address before registering
+        let addressToRegister = ethAddress;
 
-        // Wait for registration to complete
-        setTimeout(() => {
-          // Send initial blockchain mode setting
-          // This ensures the backend knows the current mode immediately
-          // after connection and before any NAT port setup
-          const initialModeMessage = {
-            type: "toggle_blockchain_mode",
-            value: saveToBlockchain,
-            sender: ethAddress,
-            content: `Setting initial mode to ${
-              saveToBlockchain ? "blockchain" : "P2P-only"
-            } mode`,
-            timestamp: Date.now(),
+        // If ethAddress is empty, try to get it from localStorage
+        if (!addressToRegister || addressToRegister === "") {
+          addressToRegister =
+            localStorage.getItem(STORAGE_KEYS.ETH_ADDRESS) || "";
+          console.log(
+            "Retrieved address from localStorage for registration:",
+            addressToRegister
+          );
+        }
+
+        // Only send registration if we have a valid address
+        if (
+          addressToRegister &&
+          addressToRegister.startsWith("0x") &&
+          addressToRegister.length === 42
+        ) {
+          // Register with the P2P network
+          const registerMessage = {
+            type: "p2p_register",
+            eth_address: addressToRegister,
           };
-          console.log("Sending initial mode setting:", initialModeMessage);
-          ws.send(JSON.stringify(initialModeMessage));
+          console.log("Registering with P2P network:", registerMessage);
+          ws.send(JSON.stringify(registerMessage));
 
-          // If in P2P-only mode, also request to use NAT port (with a short delay)
-          if (!saveToBlockchain) {
-            setTimeout(() => {
-              const natModeMessage = {
-                type: "p2p_use_nat_port", // Use correct type that backend expects
-                sender: ethAddress,
-                target: ethAddress, // For own address
-                nat_address: "", // Backend will fill this in
-                content:
-                  "Request to use NAT-negotiated port for initial P2P-only mode",
-                timestamp: Date.now(),
-              };
-              console.log(
-                "Requesting NAT port usage for initial P2P-only mode:",
-                natModeMessage
-              );
-              ws.send(JSON.stringify(natModeMessage));
-            }, 500);
-          }
-
-          // Force refresh messages after all setup is complete
+          // Wait for registration to complete
           setTimeout(() => {
-            forceRefreshMessages();
-          }, 1000);
-        }, 500);
+            // Send initial blockchain mode setting
+            // This ensures the backend knows the current mode immediately
+            // after connection and before any NAT port setup
+            const initialModeMessage = {
+              type: "toggle_blockchain_mode",
+              value: saveToBlockchain,
+              sender: addressToRegister,
+              content: `Setting initial mode to ${
+                saveToBlockchain ? "blockchain" : "P2P-only"
+              } mode`,
+              timestamp: Date.now(),
+            };
+            console.log("Sending initial mode setting:", initialModeMessage);
+            ws.send(JSON.stringify(initialModeMessage));
+
+            // If in P2P-only mode, also request to use NAT port (with a short delay)
+            if (!saveToBlockchain) {
+              setTimeout(() => {
+                const natModeMessage = {
+                  type: "p2p_use_nat_port", // Use correct type that backend expects
+                  sender: addressToRegister,
+                  target: addressToRegister, // For own address
+                  nat_address: "", // Backend will fill this in
+                  content:
+                    "Request to use NAT-negotiated port for initial P2P-only mode",
+                  timestamp: Date.now(),
+                };
+                console.log(
+                  "Requesting NAT port usage for initial P2P-only mode:",
+                  natModeMessage
+                );
+                ws.send(JSON.stringify(natModeMessage));
+              }, 500);
+            }
+
+            // Force refresh messages after all setup is complete
+            setTimeout(() => {
+              forceRefreshMessages();
+            }, 1000);
+          }, 500);
+        } else {
+          console.error(
+            "Cannot register with P2P network: Invalid Ethereum address:",
+            addressToRegister
+          );
+          toast({
+            title: "Registration Error",
+            description:
+              "Cannot connect: Invalid Ethereum address. Please reconnect your wallet.",
+            status: "error",
+            duration: 5000,
+            isClosable: true,
+          });
+
+          // Close the connection and reset state
+          ws.close();
+          setConnected(false);
+        }
       };
 
       ws.onerror = (error) => {
@@ -2556,11 +2593,44 @@ const Chat: React.FC = () => {
         return;
       }
 
+      // Ensure we have a valid Ethereum address
+      let addressToUse = ethAddress;
+
+      // If ethAddress is empty, try to get it from localStorage
+      if (!addressToUse || addressToUse === "") {
+        addressToUse = localStorage.getItem(STORAGE_KEYS.ETH_ADDRESS) || "";
+        console.log(
+          "Retrieved address from localStorage for mode change:",
+          addressToUse
+        );
+      }
+
+      // Check if the address is valid
+      if (
+        !addressToUse ||
+        !addressToUse.startsWith("0x") ||
+        addressToUse.length !== 42
+      ) {
+        console.error(
+          "Cannot send mode change: Invalid Ethereum address:",
+          addressToUse
+        );
+        toast({
+          title: "Mode Change Error",
+          description:
+            "Cannot change mode: Invalid Ethereum address. Please reconnect your wallet.",
+          status: "error",
+          duration: 3000,
+          isClosable: true,
+        });
+        return;
+      }
+
       // Send mode change to backend
       const modeMessage = {
         type: "toggle_blockchain_mode",
         value: newSaveToBlockchain,
-        sender: ethAddress,
+        sender: addressToUse,
         content: `Switching to ${
           newSaveToBlockchain ? "blockchain" : "P2P-only"
         } mode`,
@@ -2578,8 +2648,8 @@ const Chat: React.FC = () => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             const natPortMessage = {
               type: "p2p_use_nat_port",
-              sender: ethAddress,
-              target: ethAddress,
+              sender: addressToUse,
+              target: addressToUse,
               nat_address: "",
               content: "Request to use NAT-negotiated port for P2P-only mode",
               timestamp: Date.now(),
