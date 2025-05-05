@@ -719,7 +719,14 @@ const Chat: React.FC = () => {
         }, 2000);
 
         // Force refresh messages after a delay to ensure registration is complete
-        setTimeout(() => forceRefreshMessages(), 2000);
+        setTimeout(() => {
+          console.log("Initial refresh after connection established");
+          if (saveToBlockchain) {
+            forceRefreshMessages();
+          } else {
+            refreshP2PMessages();
+          }
+        }, 2000);
       };
 
       ws.onerror = (error) => {
@@ -752,6 +759,52 @@ const Chat: React.FC = () => {
         try {
           const message = JSON.parse(event.data);
           console.log("Received message:", message);
+
+          // Handle new message types related to connection state
+          if (message.type === "nat_address_updated") {
+            console.log("NAT address updated:", message);
+            toast({
+              title: "NAT Address Updated",
+              description: message.content,
+              status: "info",
+              duration: 5000,
+              isClosable: true,
+            });
+
+            // Schedule a reconnection to update the connection with new NAT info
+            setTimeout(() => {
+              console.log("Reconnecting to use new NAT address");
+              wsRef.current?.close();
+              setConnected(false);
+              // Will trigger a reconnect via the connection state effect
+            }, 1000);
+
+            return;
+          }
+
+          if (message.type === "mode_changed") {
+            console.log("Connection mode changed:", message);
+
+            // Update our UI state if needed
+            if (message.using_blockchain !== undefined) {
+              setSaveToBlockchain(message.using_blockchain);
+            }
+
+            toast({
+              title: "Connection Mode Changed",
+              description: message.content,
+              status: "info",
+              duration: 3000,
+              isClosable: true,
+            });
+
+            return;
+          }
+
+          if (message.type === "heartbeat") {
+            // Handle heartbeat silently, no need for user notification
+            return;
+          }
 
           // Give higher priority to actual P2P messages (not refresh requests)
           if (message.type === "p2p_message") {
@@ -963,8 +1016,16 @@ const Chat: React.FC = () => {
             // Handle ping/pong messages
             console.log(`Received ${message.type} from server`);
 
-            // Always refresh on pings/pongs for more reliable updates
-            forceRefreshMessages();
+            // Respect blockchain mode setting when refreshing on pings/pongs
+            if (saveToBlockchain) {
+              console.log("Refreshing with blockchain data on ping/pong");
+              forceRefreshMessages();
+            } else {
+              console.log(
+                "P2P-only refresh on ping/pong (skipping blockchain)"
+              );
+              refreshP2PMessages();
+            }
           } else if (
             message.type === "p2p_refresh_request" ||
             message.type === "p2p_message"
@@ -1123,20 +1184,35 @@ const Chat: React.FC = () => {
   };
 
   // Modify the forceRefreshMessages function to respect the saveToBlockchain setting
-  const forceRefreshMessages = async () => {
-    console.log("Forcing message refresh");
+  const forceRefreshMessages = async (forceIgnoreBlockchainMode = false) => {
+    console.log(
+      "Forcing message refresh with saveToBlockchain =",
+      saveToBlockchain
+    );
 
     try {
-      // Only fetch blockchain messages if we're using blockchain
-      if (saveToBlockchain) {
-        console.log(
-          "Fetching blockchain messages because saveToBlockchain is true"
-        );
-        await fetchBlockchainMessages(true);
-      } else {
+      // Check if we should skip blockchain operations completely
+      if (!saveToBlockchain && !forceIgnoreBlockchainMode) {
         console.log(
           "Skipping blockchain fetch because saveToBlockchain is false"
         );
+        // In P2P-only mode, still refresh P2P messages
+        refreshP2PMessages();
+        return; // Exit early to avoid any blockchain operations
+      }
+
+      // Only proceed with blockchain operations if saveToBlockchain is true or we're forcing it
+      if (saveToBlockchain || forceIgnoreBlockchainMode) {
+        console.log(
+          `Fetching blockchain messages (saveToBlockchain: ${saveToBlockchain}, force: ${forceIgnoreBlockchainMode})`
+        );
+        await fetchBlockchainMessages(true);
+      }
+
+      // Update the connected peers from blockchain data
+      if (ethAddress && (saveToBlockchain || forceIgnoreBlockchainMode)) {
+        const peers = await fetchBlockchainMessages(true);
+        setConnectedPeers(new Set(peers));
       }
 
       // Always send P2P refresh requests regardless of saveToBlockchain
@@ -2430,6 +2506,71 @@ const Chat: React.FC = () => {
     });
   };
 
+  // Replace the entire handleModeSwitch function with a better implementation
+  const handleModeSwitch = (newSaveToBlockchain: boolean) => {
+    // Update the local state
+    setSaveToBlockchain(newSaveToBlockchain);
+
+    // Only proceed if we're connected to the WebSocket
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.log(
+        "WebSocket not connected, can't send mode change notification"
+      );
+      return;
+    }
+
+    try {
+      // Send mode changed message to backend
+      const modeMessage = {
+        type: "mode_changed",
+        sender: ethAddress,
+        saveToBlockchain: newSaveToBlockchain,
+        content: `Switching to ${
+          newSaveToBlockchain ? "blockchain" : "P2P-only"
+        } mode`,
+        timestamp: Date.now(),
+      };
+
+      console.log("Sending mode change notification:", modeMessage);
+      wsRef.current.send(JSON.stringify(modeMessage));
+
+      // In P2P-only mode, let the backend know we need to use NAT ports
+      // The backend knows the correct NAT-negotiated port from STUN
+      if (!newSaveToBlockchain) {
+        const natModeMessage = {
+          type: "request_use_nat_port",
+          sender: ethAddress,
+          target: ethAddress, // For own address
+          content: "Request to use NAT-negotiated port for P2P-only mode",
+          timestamp: Date.now(),
+        };
+
+        console.log(
+          "Requesting NAT port usage for P2P-only mode:",
+          natModeMessage
+        );
+        wsRef.current.send(JSON.stringify(natModeMessage));
+      }
+
+      // Add a visual indicator to the user that mode is changing
+      toast({
+        title: `Switching to ${
+          newSaveToBlockchain ? "Blockchain" : "P2P-only"
+        } Mode`,
+        description: `Messages will now ${
+          newSaveToBlockchain
+            ? "be saved to the blockchain"
+            : "only be sent via P2P"
+        }`,
+        status: "info",
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (error) {
+      console.error("Error during mode switch:", error);
+    }
+  };
+
   return (
     <Box height="100vh" display="flex" flexDirection="column">
       <P2PServiceDownloader connectedStatus={connected} />
@@ -2487,7 +2628,7 @@ const Chat: React.FC = () => {
               )}
               <Button
                 size={["xs", "sm"]}
-                onClick={forceRefreshMessages}
+                onClick={() => forceRefreshMessages()}
                 colorScheme="cyan"
                 variant="outline"
                 mr={2}
