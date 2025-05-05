@@ -89,6 +89,7 @@ const STORAGE_KEYS = {
   P2P_PORT: "blockchat_p2p_port",
   ACTIVE_PEER: "blockchat_active_peer",
   PUBLIC_IP: "blockchat_public_ip", // Add new key for public IP
+  SAVE_TO_BLOCKCHAIN: "blockchat_save_to_blockchain", // Add new key for saveToBlockchain setting
 };
 
 // Add this new helper function near the getPublicIpAddress function
@@ -649,84 +650,61 @@ const Chat: React.FC = () => {
       const ws = new WebSocket(`ws://localhost:${wsPort}`);
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        console.log(`Connected to P2P server on port ${wsPort}`);
+      ws.onopen = async () => {
+        console.log("WebSocket connection established");
         setConnected(true);
         setIsConnecting(false);
 
-        // Clear any existing reconnect timeout
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = undefined;
-        }
-
-        // Don't try to register if we don't have an ETH address
-        if (!ethAddress) {
-          console.error(
-            "Cannot register with WebSocket: Ethereum address is missing"
-          );
-          return;
-        }
-
-        // Send multiple registration messages with delays to ensure it gets through
-        const registerMsg = {
-          type: "register",
-          content: "Register ethereum address",
-          eth_address: ethAddress,
-          sender: ethAddress,
-          timestamp: Date.now(),
-        };
-
-        console.log("Sending initial WebSocket registration:", registerMsg);
-        ws.send(JSON.stringify(registerMsg));
-
-        // Add more explicit registration message for P2P network
-        const p2pRegisterMsg = {
+        // Register with the P2P network
+        const registerMessage = {
           type: "p2p_register",
-          content: "Register ethereum address for P2P network",
           eth_address: ethAddress,
-          sender: ethAddress,
-          timestamp: Date.now(),
         };
-        console.log("Sending P2P registration:", p2pRegisterMsg);
-        ws.send(JSON.stringify(p2pRegisterMsg));
+        console.log("Registering with P2P network:", registerMessage);
+        ws.send(JSON.stringify(registerMessage));
 
-        // Send follow-up registrations with increasing delays
+        // Wait for registration to complete
         setTimeout(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.log("Sending follow-up registration (attempt 1)");
-            wsRef.current.send(JSON.stringify(registerMsg));
-            wsRef.current.send(JSON.stringify(p2pRegisterMsg));
-          }
-        }, 500);
+          // Send initial blockchain mode setting
+          // This ensures the backend knows the current mode immediately
+          // after connection and before any NAT port setup
+          const initialModeMessage = {
+            type: "toggle_blockchain_mode",
+            value: saveToBlockchain,
+            sender: ethAddress,
+            content: `Setting initial mode to ${
+              saveToBlockchain ? "blockchain" : "P2P-only"
+            } mode`,
+            timestamp: Date.now(),
+          };
+          console.log("Sending initial mode setting:", initialModeMessage);
+          ws.send(JSON.stringify(initialModeMessage));
 
-        setTimeout(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.log("Sending follow-up registration (attempt 2)");
-            wsRef.current.send(JSON.stringify(registerMsg));
-            wsRef.current.send(JSON.stringify(p2pRegisterMsg));
+          // If in P2P-only mode, also request to use NAT port (with a short delay)
+          if (!saveToBlockchain) {
+            setTimeout(() => {
+              const natModeMessage = {
+                type: "p2p_use_nat_port", // Use correct type that backend expects
+                sender: ethAddress,
+                target: ethAddress, // For own address
+                nat_address: "", // Backend will fill this in
+                content:
+                  "Request to use NAT-negotiated port for initial P2P-only mode",
+                timestamp: Date.now(),
+              };
+              console.log(
+                "Requesting NAT port usage for initial P2P-only mode:",
+                natModeMessage
+              );
+              ws.send(JSON.stringify(natModeMessage));
+            }, 500);
           }
-        }, 1500);
 
-        // Re-register with relay server after successful websocket connection
-        // This ensures the address is properly registered even if the initial attempt failed
-        setTimeout(async () => {
-          const storedAddress = localStorage.getItem(STORAGE_KEYS.ETH_ADDRESS);
-          if (storedAddress) {
-            console.log("Re-registering address with relay server...");
-            await connectToRelayServer(storedAddress, p2pPort);
-          }
-        }, 2000);
-
-        // Force refresh messages after a delay to ensure registration is complete
-        setTimeout(() => {
-          console.log("Initial refresh after connection established");
-          if (saveToBlockchain) {
+          // Force refresh messages after all setup is complete
+          setTimeout(() => {
             forceRefreshMessages();
-          } else {
-            refreshP2PMessages();
-          }
-        }, 2000);
+          }, 1000);
+        }, 500);
       };
 
       ws.onerror = (error) => {
@@ -2508,23 +2486,26 @@ const Chat: React.FC = () => {
 
   // Replace the entire handleModeSwitch function with a better implementation
   const handleModeSwitch = (newSaveToBlockchain: boolean) => {
-    // Update the local state
-    setSaveToBlockchain(newSaveToBlockchain);
-
-    // Only proceed if we're connected to the WebSocket
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.log(
-        "WebSocket not connected, can't send mode change notification"
-      );
-      return;
-    }
-
     try {
-      // Send mode changed message to backend
+      setSaveToBlockchain(newSaveToBlockchain);
+      localStorage.setItem(
+        STORAGE_KEYS.SAVE_TO_BLOCKCHAIN,
+        newSaveToBlockchain.toString()
+      );
+
+      // Check if websocket is available
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        console.error(
+          "WebSocket not connected, can't send mode change notification"
+        );
+        return;
+      }
+
+      // Send mode change to backend
       const modeMessage = {
-        type: "mode_changed",
+        type: "toggle_blockchain_mode",
+        value: newSaveToBlockchain,
         sender: ethAddress,
-        saveToBlockchain: newSaveToBlockchain,
         content: `Switching to ${
           newSaveToBlockchain ? "blockchain" : "P2P-only"
         } mode`,
@@ -2538,9 +2519,10 @@ const Chat: React.FC = () => {
       // The backend knows the correct NAT-negotiated port from STUN
       if (!newSaveToBlockchain) {
         const natModeMessage = {
-          type: "request_use_nat_port",
+          type: "p2p_use_nat_port", // Corrected to match what backend expects
           sender: ethAddress,
           target: ethAddress, // For own address
+          nat_address: "", // Backend will fill this in with the correct NAT address
           content: "Request to use NAT-negotiated port for P2P-only mode",
           timestamp: Date.now(),
         };
@@ -3119,9 +3101,11 @@ const Chat: React.FC = () => {
                               id="save-to-blockchain"
                               colorScheme="green"
                               isChecked={saveToBlockchain}
-                              onChange={(e) =>
-                                setSaveToBlockchain(e.target.checked)
-                              }
+                              onChange={(e) => {
+                                const newMode = e.target.checked;
+                                // Call handleModeSwitch immediately when the switch changes
+                                handleModeSwitch(newMode);
+                              }}
                             />
                           </FormControl>
                         </Box>
