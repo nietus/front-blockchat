@@ -1,6 +1,14 @@
 // frontend/src/components/P2PServiceDownloader.tsx
 import React, { useState, useEffect } from "react";
-import { Box, Button, VStack, HStack, Text, useToast } from "@chakra-ui/react";
+import {
+  Box,
+  Button,
+  VStack,
+  HStack,
+  Text,
+  useToast,
+  Flex,
+} from "@chakra-ui/react";
 import { DownloadIcon, InfoIcon } from "@chakra-ui/icons";
 
 interface P2PServiceDownloaderProps {
@@ -64,23 +72,23 @@ const P2PServiceDownloader: React.FC<P2PServiceDownloaderProps> = ({
   // Handle download and instructions
   const handleDownload = () => {
     toast({
-      title: "Downloading P2P Service",
-      description: "After download, run the exe file to start the P2P service",
-      status: "info",
+      title: "P2P Service downloaded - please run the exe file to start",
+      status: "success",
       duration: 5000,
       isClosable: true,
+      position: "bottom-left",
     });
   };
 
   // Instructions for running the service
   const handleShowInstructions = () => {
     toast({
-      title: "P2P Service Instructions",
-      description:
-        "1. Download the p2pConection.exe file\n2. Run it before using BlockChat\n3. Keep it running in the background",
-      status: "info",
-      duration: 10000,
+      title:
+        "P2P Service Instructions: Download, run exe file, keep running in background",
+      status: "success",
+      duration: 5000,
       isClosable: true,
+      position: "bottom-left",
     });
   };
 
@@ -94,20 +102,22 @@ const P2PServiceDownloader: React.FC<P2PServiceDownloaderProps> = ({
       position="fixed"
       bottom="20px"
       right="20px"
-      bg="red.600"
-      p={4}
+      bg="rgba(220, 38, 38, 0.9)"
+      p={3}
       borderRadius="md"
       boxShadow="lg"
+      width="auto"
+      maxWidth="300px"
       zIndex={1000}
     >
-      <VStack spacing={3} align="stretch">
-        <Text fontWeight="bold" color="white">
-          P2P Service Not Running
+      <VStack spacing={2} align="stretch">
+        <Text fontWeight="bold" color="white" fontSize="md" textAlign="center">
+          🚫 P2P Service Not Running
         </Text>
-        <Text fontSize="sm" color="white">
-          BlockChat requires the P2P service to send and receive messages
+        <Text fontSize="xs" color="white" textAlign="center">
+          BlockChat requires the P2P service
         </Text>
-        <HStack>
+        <HStack justifyContent="center" spacing={2}>
           <Button
             as="a"
             href="/p2pConection.exe"
@@ -117,7 +127,7 @@ const P2PServiceDownloader: React.FC<P2PServiceDownloaderProps> = ({
             leftIcon={<DownloadIcon />}
             onClick={handleDownload}
           >
-            Download Service
+            Download
           </Button>
           <Button
             size="sm"
@@ -125,7 +135,7 @@ const P2PServiceDownloader: React.FC<P2PServiceDownloaderProps> = ({
             leftIcon={<InfoIcon />}
             onClick={handleShowInstructions}
           >
-            Instructions
+            Help
           </Button>
         </HStack>
       </VStack>

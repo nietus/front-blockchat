@@ -225,6 +225,12 @@ const Chat: React.FC = () => {
 
   const web3Ref = useRef<Web3 | null>(null);
 
+  const [loginButtonConnecting, setLoginButtonConnecting] = useState(false); // New state for login button only
+
+  // Add tracking for previously shown system messages to prevent duplicates
+  const [lastSystemMessage, setLastSystemMessage] = useState("");
+  const [lastSystemMessageTime, setLastSystemMessageTime] = useState(0);
+
   // Save values to localStorage when they change
   useEffect(() => {
     if (username) {
@@ -256,17 +262,19 @@ const Chat: React.FC = () => {
 
   // Add auto-reconnect on page load if we have saved credentials
   useEffect(() => {
-    // If we have saved address, username and ports, try to reconnect automatically
+    // Only attempt auto-reconnect if the user has already logged in
+    // and we have both ethereum address and username
     if (ethAddress && username) {
       console.log("Found saved credentials, attempting auto-reconnect...");
       // Short delay to ensure the UI is fully loaded
       const reconnectTimeout = setTimeout(() => {
-        connectWallet();
+        // When auto-reconnecting, don't show the connecting indicator
+        connectWallet(true); // Pass true to indicate this is an auto-reconnect
       }, 1000);
 
       return () => clearTimeout(reconnectTimeout);
     }
-  }, []);
+  }, [ethAddress, username]);
 
   // Add a stable message ID generator to uniquely identify messages
   const getMessageId = (msg: Message): string => {
@@ -616,10 +624,10 @@ const Chat: React.FC = () => {
         // Display a success message
         toast({
           title: "Connected to Relay Server",
-          description: `Your IP (${publicIp}) and P2P port (${port}) are now registered`,
           status: "success",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
         return true;
       }
@@ -756,11 +764,10 @@ const Chat: React.FC = () => {
           );
           toast({
             title: "Connection Error",
-            description:
-              "Invalid Ethereum address. Please reconnect with a valid address.",
             status: "error",
-            duration: 5000,
+            duration: 3000,
             isClosable: true,
+            position: "bottom-left",
           });
         }
 
@@ -800,11 +807,10 @@ const Chat: React.FC = () => {
             );
             toast({
               title: "Connection Lost",
-              description:
-                "Could not reconnect after multiple attempts. Please try again later.",
               status: "error",
               duration: 5000,
               isClosable: true,
+              position: "bottom-left",
             });
           }
         }
@@ -828,22 +834,8 @@ const Chat: React.FC = () => {
           ) {
             await processPeerMessage(data);
           } else if (data.type === "system" && data.content) {
-            // Only show system messages if they're interesting to the user
-            // and not just internal state changes
-            if (
-              !data.content.includes("stored") &&
-              !data.content.includes("register") &&
-              !data.content.includes("queue") &&
-              !data.content.includes("Updated NAT") // Filter out NAT update messages
-            ) {
-              toast({
-                title: "System Message",
-                description: data.content,
-                status: "info",
-                duration: 3000,
-                isClosable: true,
-              });
-            }
+            // Process with our dedicated handler
+            processSystemMessage(data.content);
 
             // Check for NAT port binding information in system messages
             const peerFoundRegex =
@@ -1148,11 +1140,10 @@ const Chat: React.FC = () => {
         if (!result) {
           toast({
             title: "Signature Failed",
-            description:
-              "Could not sign and encrypt the message. Please try again.",
             status: "error",
             duration: 3000,
             isClosable: true,
+            position: "bottom-left",
           });
           setInput(messageContent);
           return;
@@ -1172,10 +1163,10 @@ const Chat: React.FC = () => {
         if (!signature) {
           toast({
             title: "Signature Failed",
-            description: "Could not sign the message. Please try again.",
             status: "error",
             duration: 3000,
             isClosable: true,
+            position: "bottom-left",
           });
           setInput(messageContent);
           return;
@@ -1336,10 +1327,10 @@ const Chat: React.FC = () => {
       console.error("Error sending message:", error);
       toast({
         title: "Send Error",
-        description: "Failed to send message",
         status: "error",
         duration: 3000,
         isClosable: true,
+        position: "bottom-left",
       });
     }
   };
@@ -1390,10 +1381,10 @@ const Chat: React.FC = () => {
         // Show toast indicating waiting for the other peer
         toast({
           title: "Waiting for Connection",
-          description: `Sent connection request to ${targetAddress}. Waiting for response...`,
           status: "info",
-          duration: 5000,
+          duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
 
         while (attempts < maxAttempts && !connected) {
@@ -1478,19 +1469,19 @@ const Chat: React.FC = () => {
         } else {
           toast({
             title: "Connection Failed",
-            description: `Could not establish connection with ${targetAddress}. The peer may need to click "Connect" as well.`,
             status: "error",
             duration: 5000,
             isClosable: true,
+            position: "bottom-left",
           });
         }
       } else {
         toast({
           title: "Peer Not Found",
-          description: `Peer ${targetAddress} not found on relay server. Make sure the address is correct and they are online.`,
           status: "error",
           duration: 5000,
           isClosable: true,
+          position: "bottom-left",
         });
       }
       setIsConnecting(false);
@@ -1515,12 +1506,10 @@ const Chat: React.FC = () => {
       if (connectedPeers.has(peerAddress)) {
         toast({
           title: "Connecting...",
-          description: `Attempting to connect to ${formatPeerName(
-            peerAddress
-          )}`,
           status: "info",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
 
         // Try to establish a connection
@@ -1529,12 +1518,10 @@ const Chat: React.FC = () => {
       } else {
         toast({
           title: "Not Connected",
-          description: `You're not currently connected to ${formatPeerName(
-            peerAddress
-          )}. This peer is only in your history.`,
           status: "warning",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
         return;
       }
@@ -1812,6 +1799,7 @@ const Chat: React.FC = () => {
                   status: "warning",
                   duration: 5000,
                   isClosable: true,
+                  position: "bottom-left",
                 });
               }
 
@@ -1879,10 +1867,10 @@ const Chat: React.FC = () => {
     // Show confirmation
     toast({
       title: "Logged Out",
-      description: "You have been successfully logged out",
       status: "success",
       duration: 3000,
       isClosable: true,
+      position: "bottom-left",
     });
   };
 
@@ -1926,10 +1914,10 @@ const Chat: React.FC = () => {
       navigator.clipboard.writeText(ethAddress);
       toast({
         title: "Address Copied",
-        description: "Your Ethereum address has been copied to clipboard",
         status: "success",
         duration: 2000,
         isClosable: true,
+        position: "bottom-left",
       });
     }
   };
@@ -2182,11 +2170,10 @@ const Chat: React.FC = () => {
         );
         toast({
           title: "Please wait",
-          description:
-            "Please wait at least 5 seconds before changing modes again",
           status: "warning",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
         return;
       }
@@ -2222,11 +2209,10 @@ const Chat: React.FC = () => {
         console.error("Invalid Ethereum address:", addressToUse);
         toast({
           title: "Mode Change Error",
-          description:
-            "Invalid Ethereum address. Please reconnect your wallet.",
           status: "error",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
         return;
       }
@@ -2250,11 +2236,10 @@ const Chat: React.FC = () => {
         // Show status toast
         toast({
           title: "Switching to P2P-only Mode",
-          description:
-            "Setting up NAT traversal for peer-to-peer connections...",
           status: "info",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
 
         // Send multiple NAT detection requests to ensure it's processed
@@ -2311,7 +2296,7 @@ const Chat: React.FC = () => {
   };
 
   // Main connection function
-  const connectWallet = async () => {
+  const connectWallet = async (isAutoReconnect = false) => {
     try {
       // Clear any existing state first
       setConnectedPeers(new Set());
@@ -2323,12 +2308,18 @@ const Chat: React.FC = () => {
       if (!username.trim()) {
         toast({
           title: "Username Required",
-          description: "Please enter a username before connecting",
           status: "error",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
         return;
+      }
+
+      // Only set connecting states if this is not an auto-reconnect
+      if (!isAutoReconnect) {
+        setIsConnecting(true);
+        setLoginButtonConnecting(true); // Set the login button state
       }
 
       if (window.ethereum) {
@@ -2363,11 +2354,17 @@ const Chat: React.FC = () => {
           console.error("Failed to register with relay server");
           toast({
             title: "Relay Connection Failed",
-            description: "Could not connect to relay server",
             status: "error",
             duration: 5000,
             isClosable: true,
+            position: "bottom-left",
           });
+
+          // Reset connecting state if this is a manual connection
+          if (!isAutoReconnect) {
+            setIsConnecting(false);
+            setLoginButtonConnecting(false); // Reset the login button state
+          }
           return; // Exit like the Python script does
         }
 
@@ -2376,32 +2373,47 @@ const Chat: React.FC = () => {
 
         toast({
           title: "Connected to Wallet",
-          description: `Connected to address: ${addressToUse.substring(
-            0,
-            6
-          )}...${addressToUse.substring(38)}`,
           status: "success",
           duration: 3000,
           isClosable: true,
+          position: "bottom-left",
         });
+
+        // Reset connecting state if this is a manual connection
+        if (!isAutoReconnect) {
+          setIsConnecting(false);
+          setLoginButtonConnecting(false); // Reset the login button state
+        }
       } else {
         toast({
           title: "MetaMask Not Found",
-          description: "Please install MetaMask extension",
           status: "error",
           duration: 5000,
           isClosable: true,
+          position: "bottom-left",
         });
+
+        // Reset connecting state if this is a manual connection
+        if (!isAutoReconnect) {
+          setIsConnecting(false);
+          setLoginButtonConnecting(false); // Reset the login button state
+        }
       }
     } catch (error) {
       console.error("Error connecting to wallet:", error);
       toast({
         title: "Connection Error",
-        description: "Failed to connect to Ethereum wallet",
         status: "error",
         duration: 5000,
         isClosable: true,
+        position: "bottom-left",
       });
+
+      // Make sure to reset connecting states on error
+      if (!isAutoReconnect) {
+        setIsConnecting(false);
+        setLoginButtonConnecting(false); // Reset the login button state
+      }
     }
   };
 
@@ -2484,71 +2496,89 @@ const Chat: React.FC = () => {
     }
   };
 
+  const processSystemMessage = useCallback(
+    (content: string) => {
+      // Filter out common system messages that are not important to users
+      const systemMessagesToFilter = [
+        "stored",
+        "register",
+        "queue",
+        "mode using port",
+        "refresh",
+      ];
+
+      // Check if this message contains any filtered terms
+      const shouldFilter = systemMessagesToFilter.some((term) =>
+        content.toLowerCase().includes(term.toLowerCase())
+      );
+
+      if (!shouldFilter) {
+        // This is a message worth showing to the user
+        toast({
+          title: content, // Just use content as the title for cleaner appearance
+          status: "success", // Use success status for green color
+          duration: 3000,
+          isClosable: true,
+          position: "bottom-left", // Position on the bottom-left
+        });
+      } else {
+        // Just log filtered messages to console
+        console.log("System message (filtered from UI):", content);
+      }
+    },
+    [toast]
+  );
+
   return (
     <Box height="100vh" display="flex" flexDirection="column">
-      <P2PServiceDownloader connectedStatus={connected} />
+      {ethAddress && <P2PServiceDownloader connectedStatus={connected} />}
       <Container maxW="container.xl" py={5} color="whiteAlpha.900">
         <VStack spacing={4} align="stretch">
           <HStack justifyContent="space-between">
-            <Text
-              fontSize={["xl", "2xl"]}
-              fontWeight="bold"
-              bgGradient="linear(to-r, cyan.400, purple.500)"
-              bgClip="text"
-            >
-              BlockChat
-            </Text>
-            <HStack
-              spacing={2}
-              flexWrap="wrap"
-              justifyContent={["flex-end", "flex-end", "flex-end"]}
-            >
-              <Button
-                size={["xs", "sm"]}
-                onClick={onOpenSettings}
-                colorScheme="teal"
-                variant="outline"
+            {ethAddress && (
+              <Text
+                fontSize={["xl", "2xl"]}
+                fontWeight="bold"
+                bgGradient="linear(to-r, cyan.400, purple.500)"
+                bgClip="text"
               >
-                Settings
-              </Button>
-              {isConnecting ? (
-                <Badge
-                  colorScheme="yellow"
-                  p={2}
-                  borderRadius="md"
-                  variant="outline"
-                >
-                  Connecting...
-                </Badge>
-              ) : connected ? (
-                <Badge
-                  colorScheme="green"
-                  p={2}
-                  borderRadius="md"
-                  variant="outline"
-                >
-                  Connected
-                </Badge>
-              ) : (
-                <Badge
-                  colorScheme="red"
-                  p={2}
-                  borderRadius="md"
-                  variant="outline"
-                >
-                  Disconnected
-                </Badge>
-              )}
-              <Button
-                size={["xs", "sm"]}
-                onClick={() => forceRefreshMessages()}
-                colorScheme="cyan"
-                variant="outline"
-                mr={2}
+                BlockChat
+              </Text>
+            )}
+            {ethAddress && (
+              <HStack
+                spacing={2}
+                flexWrap="wrap"
+                justifyContent={["flex-end", "flex-end", "flex-end"]}
               >
-                Refresh
-              </Button>
-              {ethAddress && (
+                {isConnecting ? (
+                  <Badge
+                    colorScheme="yellow"
+                    p={2}
+                    borderRadius="md"
+                    variant="outline"
+                  >
+                    Connecting...
+                  </Badge>
+                ) : connected ? (
+                  <Badge
+                    colorScheme="green"
+                    p={2}
+                    borderRadius="md"
+                    variant="outline"
+                  >
+                    Connected
+                  </Badge>
+                ) : (
+                  <Badge
+                    colorScheme="red"
+                    p={2}
+                    borderRadius="md"
+                    variant="outline"
+                  >
+                    Disconnected
+                  </Badge>
+                )}
                 <Button
                   size={["xs", "sm"]}
                   onClick={handleLogoff}
@@ -2557,54 +2587,76 @@ const Chat: React.FC = () => {
                 >
                   Log Off
                 </Button>
-              )}
-            </HStack>
+              </HStack>
+            )}
           </HStack>
 
           {!ethAddress ? (
             <Box
-              p={5}
-              borderWidth={1}
-              borderRadius="lg"
-              bg="gray.800"
-              boxShadow="xl"
+              display="flex"
+              justifyContent="center"
+              alignItems="center"
+              minHeight="70vh"
             >
-              <VStack spacing={4}>
-                <Text fontSize="lg">
-                  Please connect your wallet to use BlockChat
-                </Text>
-                <Input
-                  placeholder="Enter your username"
-                  value={username}
-                  onChange={handleUsernameChange}
-                  bg="gray.700"
-                  borderColor="gray.600"
-                  _placeholder={{ color: "gray.400" }}
-                />
-                <FormControl>
-                  <FormLabel>Your P2P Port</FormLabel>
+              <Box
+                p={8}
+                borderWidth={1}
+                borderRadius="lg"
+                bg="gray.800"
+                boxShadow="xl"
+                maxWidth="500px"
+                width="100%"
+              >
+                <VStack spacing={6}>
+                  <Text
+                    fontSize="2xl"
+                    fontWeight="bold"
+                    bgGradient="linear(to-r, cyan.400, purple.500)"
+                    bgClip="text"
+                  >
+                    Welcome to BlockChat
+                  </Text>
+                  <Text fontSize="md" textAlign="center" color="gray.400">
+                    Secure P2P communication with blockchain verification
+                  </Text>
                   <Input
-                    type="number"
-                    placeholder="Enter your P2P port (e.g., 8082)"
-                    value={p2pPort}
-                    onChange={(e) => setP2pPort(parseInt(e.target.value))}
+                    placeholder="Enter your username"
+                    value={username}
+                    onChange={handleUsernameChange}
                     bg="gray.700"
                     borderColor="gray.600"
                     _placeholder={{ color: "gray.400" }}
+                    size="lg"
                   />
-                  <Text fontSize="xs" color="gray.400" mt={1}>
-                    This port will be associated with your address in the relay
-                    server. Use a different port for each BlockChat instance.
-                  </Text>
-                </FormControl>
-                <Button
-                  colorScheme="blue"
-                  onClick={connectWallet}
-                  width={["100%", "auto"]}
-                >
-                  Connect Wallet
-                </Button>
-              </VStack>
+                  <FormControl>
+                    <FormLabel>Your P2P Port</FormLabel>
+                    <Input
+                      type="number"
+                      placeholder="Enter your P2P port (e.g., 8082)"
+                      value={p2pPort}
+                      onChange={(e) => setP2pPort(parseInt(e.target.value))}
+                      bg="gray.700"
+                      borderColor="gray.600"
+                      _placeholder={{ color: "gray.400" }}
+                      size="lg"
+                    />
+                    <Text fontSize="xs" color="gray.400" mt={1}>
+                      This port will be associated with your address in the
+                      relay server.
+                    </Text>
+                  </FormControl>
+                  <Button
+                    colorScheme="blue"
+                    onClick={() => connectWallet(false)}
+                    width="100%"
+                    size="lg"
+                    isLoading={loginButtonConnecting}
+                    loadingText="Connecting..."
+                  >
+                    Connect Wallet
+                  </Button>
+                </VStack>
+              </Box>
             </Box>
           ) : (
             <Grid templateColumns={["1fr", "1fr", "300px 1fr"]} gap={4}>
@@ -2632,7 +2684,7 @@ const Chat: React.FC = () => {
                   </Text>
                   <Divider mb={2} borderColor="gray.700" />
 
-                  {!viewingHistory && !isConnecting && (
+                  {ethAddress && (
                     <Button
                       size="sm"
                       onClick={onOpen}
@@ -2757,9 +2809,11 @@ const Chat: React.FC = () => {
                     <Text fontSize="sm" fontWeight="bold">
                       Active Conversations
                     </Text>
-                    <Button size="xs" onClick={onOpen} colorScheme="blue">
-                      Connect New
-                    </Button>
+                    {ethAddress && (
+                      <Button size="xs" onClick={onOpen} colorScheme="blue">
+                        Connect New
+                      </Button>
+                    )}
                   </HStack>
                   <Box overflowX="auto" pb={2}>
                     <HStack spacing={2}>
