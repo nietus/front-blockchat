@@ -817,56 +817,105 @@ const Chat: React.FC = () => {
 
       ws.onmessage = async (event) => {
         try {
-          const message = JSON.parse(event.data);
-          console.log("Received message:", message);
+          const data = JSON.parse(event.data);
+          console.log("WebSocket message received:", data);
 
-          // Handle special message types
-          if (message.type === "nat_address_updated") {
-            console.log("NAT address updated:", message);
+          // Handle specific message types
+          if (
+            data.type === "message" &&
+            data.sender !== ethAddress &&
+            data.target === ethAddress
+          ) {
+            await processPeerMessage(data);
+          } else if (data.type === "system" && data.content) {
+            // Only show system messages if they're interesting to the user
+            // and not just internal state changes
+            if (
+              !data.content.includes("stored") &&
+              !data.content.includes("register") &&
+              !data.content.includes("queue") &&
+              !data.content.includes("Updated NAT") // Filter out NAT update messages
+            ) {
+              toast({
+                title: "System Message",
+                description: data.content,
+                status: "info",
+                duration: 3000,
+                isClosable: true,
+              });
+            }
 
-            // Simply store the address, but DON'T trigger reconnection
-            if (message.nat_address) {
-              console.log(`Stored new NAT address: ${message.nat_address}`);
-              localStorage.setItem(
-                "blockchat_nat_address",
-                message.nat_address
+            // Check for NAT port binding information in system messages
+            const peerFoundRegex =
+              /Peer (0x[a-fA-F0-9]{40})\s+found Peer ([^:]+):(\d+)/;
+            const match = peerFoundRegex.exec(data.content || "");
+            if (match && match.length >= 4) {
+              const foundEthAddress = match[1];
+              const foundIp = match[2];
+              const foundPort = match[3];
+
+              // Store this mapping in localStorage for resilience across page reloads
+              if (foundEthAddress && foundIp && foundPort) {
+                const natPortKey = `nat_port_${foundEthAddress}`;
+                const natAddress = `${foundIp}:${foundPort}`;
+                localStorage.setItem(natPortKey, natAddress);
+                console.log(
+                  `Stored NAT port mapping: ${foundEthAddress} -> ${natAddress}`
+                );
+              }
+            }
+          } else if (data.type === "refresh_request") {
+            console.log("Received refresh request, fetching messages");
+            forceRefreshMessages(false);
+          } else if (
+            data.type === "p2p_refresh_request" &&
+            data.target === ethAddress
+          ) {
+            console.log("Received P2P-specific refresh request");
+            refreshP2PMessages();
+          } else if (data.type === "nat_address_updated" && data.nat_address) {
+            // Handle NAT address updates explicitly
+            console.log(`NAT address updated: ${data.nat_address}`);
+            localStorage.setItem("nat_address", data.nat_address);
+
+            // No need to update UI state for NAT address as it's handled internally
+          } else if (
+            data.type === "toggle_blockchain_mode" &&
+            data.sender !== ethAddress
+          ) {
+            // Update our local mode if someone else toggled it (coordination)
+            const newMode = data.value === true;
+            console.log(
+              `Received mode toggle from ${data.sender}: ${
+                newMode ? "blockchain" : "P2P-only"
+              }`
+            );
+            setSaveToBlockchain(newMode);
+            localStorage.setItem(
+              STORAGE_KEYS.SAVE_TO_BLOCKCHAIN,
+              newMode.toString()
+            );
+          } else if (
+            data.type === "connect_peer" &&
+            data.target === ethAddress
+          ) {
+            // Someone is trying to connect to us, let's connect back
+            const senderAddress = data.sender;
+            if (
+              senderAddress &&
+              senderAddress !== ethAddress &&
+              senderAddress.startsWith("0x") &&
+              senderAddress.length === 42
+            ) {
+              console.log(
+                `Received connection request from ${senderAddress}, connecting back`
               );
+              // Initiate connection if not already connected
+              if (!actuallyConnectedPeers.includes(senderAddress)) {
+                connectToPeer(senderAddress);
+              }
             }
-
-            // Update the UI
-            toast({
-              title: "NAT Address Updated",
-              description: message.content,
-              status: "info",
-              duration: 2000,
-              isClosable: true,
-            });
-
-            return;
           }
-
-          // Handle mode change messages
-          if (message.type === "mode_changed") {
-            console.log("Mode changed:", message);
-
-            // Update our UI state if needed
-            if (message.using_blockchain !== undefined) {
-              setSaveToBlockchain(message.using_blockchain);
-            }
-
-            toast({
-              title: "Mode Changed",
-              description: message.content,
-              status: "info",
-              duration: 2000,
-              isClosable: true,
-            });
-
-            return;
-          }
-
-          // Handle other message types like before...
-          // Rest of the message handler remains the same
         } catch (e) {
           console.log("Non-JSON message:", event.data);
         }
@@ -2198,40 +2247,67 @@ const Chat: React.FC = () => {
 
       // For P2P-only mode, send NAT request with delay
       if (!newSaveToBlockchain) {
-        setTimeout(() => {
-          if (globalWebSocketRef.current?.readyState === WebSocket.OPEN) {
-            const natPortMessage = {
-              type: "p2p_use_nat_port",
-              sender: addressToUse,
-              target: addressToUse,
-              nat_address: "",
-              content: "Request to use NAT port for P2P-only mode",
-              timestamp: Date.now(),
-            };
+        // Show status toast
+        toast({
+          title: "Switching to P2P-only Mode",
+          description:
+            "Setting up NAT traversal for peer-to-peer connections...",
+          status: "info",
+          duration: 3000,
+          isClosable: true,
+        });
 
-            console.log("Requesting NAT port usage:", natPortMessage);
-            globalWebSocketRef.current.send(JSON.stringify(natPortMessage));
+        // Send multiple NAT detection requests to ensure it's processed
+        // First immediate request
+        sendNatPortRequest(addressToUse);
+
+        // Second request after delay
+        setTimeout(() => {
+          if (
+            globalWebSocketRef.current &&
+            globalWebSocketRef.current.readyState === WebSocket.OPEN
+          ) {
+            sendNatPortRequest(addressToUse);
+          }
+        }, 1000);
+
+        // Final request with longer delay for reliability
+        setTimeout(() => {
+          if (
+            globalWebSocketRef.current &&
+            globalWebSocketRef.current.readyState === WebSocket.OPEN
+          ) {
+            sendNatPortRequest(addressToUse);
+
+            // Also refresh messages to ensure proper connection
+            forceRefreshMessages(true);
           }
         }, 2500);
       }
-
-      // Show toast
-      toast({
-        title: `Switching to ${
-          newSaveToBlockchain ? "Blockchain" : "P2P-only"
-        } Mode`,
-        description: `Messages will ${
-          newSaveToBlockchain
-            ? "be saved to the blockchain"
-            : "only be sent via P2P"
-        }`,
-        status: "info",
-        duration: 3000,
-        isClosable: true,
-      });
     } catch (error) {
-      console.error("Error during mode switch:", error);
+      console.error("Error handling mode switch:", error);
     }
+  };
+
+  // Helper function to send NAT port request
+  const sendNatPortRequest = (addressToUse: string) => {
+    if (
+      !globalWebSocketRef.current ||
+      globalWebSocketRef.current.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    const natModeMessage = {
+      type: "p2p_use_nat_port",
+      sender: addressToUse,
+      target: addressToUse,
+      nat_address: "", // Empty string triggers automatic NAT detection
+      content: "Request to use NAT port for P2P-only mode",
+      timestamp: Date.now(),
+    };
+    console.log("Requesting NAT port usage:", natModeMessage);
+    globalWebSocketRef.current.send(JSON.stringify(natModeMessage));
   };
 
   // Main connection function
