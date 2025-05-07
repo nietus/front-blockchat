@@ -51,6 +51,7 @@ interface Message {
   encryptedContent?: string;
   saveToBlockchain?: boolean;
   p2pOnly?: boolean; // New field to identify P2P-only messages
+  senderUsername?: string; // New field to store the username of the sender
 }
 
 interface Conversation {
@@ -90,6 +91,7 @@ const STORAGE_KEYS = {
   ACTIVE_PEER: "blockchat_active_peer",
   PUBLIC_IP: "blockchat_public_ip", // Add new key for public IP
   SAVE_TO_BLOCKCHAIN: "blockchat_save_to_blockchain", // Add new key for saveToBlockchain setting
+  PEER_USERNAMES: "blockchat_peer_usernames", // Add new key for peer usernames
 };
 
 // Add this new helper function near the getPublicIpAddress function
@@ -230,6 +232,14 @@ const Chat: React.FC = () => {
   // Add tracking for previously shown system messages to prevent duplicates
   const [lastSystemMessage, setLastSystemMessage] = useState("");
   const [lastSystemMessageTime, setLastSystemMessageTime] = useState(0);
+
+  // Add a state to store peer usernames
+  const [peerUsernames, setPeerUsernames] = useState<Record<string, string>>(
+    () => {
+      const saved = localStorage.getItem(STORAGE_KEYS.PEER_USERNAMES);
+      return saved ? JSON.parse(saved) : {};
+    }
+  );
 
   // Save values to localStorage when they change
   useEffect(() => {
@@ -453,6 +463,11 @@ const Chat: React.FC = () => {
                     normalizedTimestamp = Date.now();
                   }
 
+                  // Extract and store username if it exists
+                  if (tx.senderUsername && tx.author !== ethAddress) {
+                    updatePeerUsername(tx.author, tx.senderUsername);
+                  }
+
                   // Create a message object from the transaction
                   const message: Message = {
                     sender: tx.author,
@@ -466,6 +481,7 @@ const Chat: React.FC = () => {
                     encryptedContent: encryptedContent, // Store encrypted version
                     decrypted: decrypted, // Mark as decrypted if successfully decrypted
                     target: tx.target || undefined, // Store target info if available
+                    senderUsername: tx.senderUsername, // Store the username
                   };
 
                   // Track encrypted messages to show one summary notification
@@ -907,6 +923,15 @@ const Chat: React.FC = () => {
                 connectToPeer(senderAddress);
               }
             }
+          } else if (
+            data.type === "message" &&
+            data.p2pOnly === true &&
+            ((data.sender === ethAddress && data.target) ||
+              (data.target === ethAddress && data.sender))
+          ) {
+            // Handle P2P-only messages specifically for better reliability
+            console.log("Processing a P2P-only message:", data);
+            await processPeerMessage(data);
           }
         } catch (e) {
           console.log("Non-JSON message:", event.data);
@@ -1070,6 +1095,7 @@ const Chat: React.FC = () => {
         encrypted: encrypted,
         encryptedSymmetricKey: encryptedSymmetricKey,
         target: target || undefined, // Convert null to undefined if needed
+        senderUsername: username, // Include the username in blockchain transactions
       };
 
       const response = await fetch(
@@ -1187,6 +1213,7 @@ const Chat: React.FC = () => {
         decrypted: encrypted, // Mark as decrypted since we're using the original content
         saveToBlockchain: saveToBlockchain, // Add the flag to indicate if it should be saved in the blockchain
         p2pOnly: !saveToBlockchain, // Mark as P2P-only if not saving to blockchain
+        senderUsername: username, // Add the username to the message
       };
 
       // Immediately update UI with the new message
@@ -1287,6 +1314,7 @@ const Chat: React.FC = () => {
         encryptedSymmetricKey: encryptedSymmetricKey,
         saveToBlockchain: saveToBlockchain, // Add flag to the WebSocket message object
         p2pOnly: !saveToBlockchain, // Add p2pOnly flag based on saveToBlockchain setting
+        senderUsername: username, // Include the username in the outgoing message
       };
 
       // Send to active peer or broadcast
@@ -1301,6 +1329,16 @@ const Chat: React.FC = () => {
         if (!saveToBlockchain && actuallyConnectedPeers.includes(activePeer)) {
           // Send the initial message
           globalWebSocketRef.current.send(JSON.stringify(peerMessage));
+
+          // Also process this message locally to ensure it appears in our UI
+          if (!saveToBlockchain) {
+            processPeerMessage({
+              ...peerMessage,
+              confirmed: true,
+              content: messageContent, // Use the decrypted content for UI
+              decrypted: encrypted ? true : false,
+            });
+          }
 
           // Then send one additional copy with a delay for reliability
           setTimeout(() => {
@@ -1610,6 +1648,12 @@ const Chat: React.FC = () => {
 
   // Utility functions for display
   const formatPeerName = (address: string) => {
+    // If we have a username for this address, use it
+    if (peerUsernames[address]) {
+      return peerUsernames[address];
+    }
+
+    // Otherwise use the shortened address format
     return address.length > 10
       ? `${address.substring(0, 6)}...${address.substring(address.length - 4)}`
       : address;
@@ -2044,6 +2088,11 @@ const Chat: React.FC = () => {
 
   // Add a helper function to process peer messages consistently
   const processPeerMessage = async (message: any) => {
+    // Extract and store the username if it exists in the message
+    if (message.senderUsername && message.sender !== ethAddress) {
+      updatePeerUsername(message.sender, message.senderUsername);
+    }
+
     // First try to decrypt if encrypted
     if (message.encrypted && message.encryptedSymmetricKey) {
       try {
@@ -2074,10 +2123,21 @@ const Chat: React.FC = () => {
       decrypted: message.decrypted || false,
       encryptedSymmetricKey: message.encryptedSymmetricKey,
       p2pOnly: message.p2pOnly || false,
+      target: message.target,
+      senderUsername: message.senderUsername || peerUsernames[message.sender],
     };
 
+    // Determine the peer address correctly based on whether you're sending or receiving
+    const peerAddress =
+      message.sender === ethAddress ? message.target : message.sender;
+
     // Update the UI immediately if this is for the active conversation
-    if (activePeer === message.sender) {
+    // Check if the active peer matches EITHER the sender OR target of the message
+    if (
+      activePeer === message.sender ||
+      (message.sender === ethAddress && activePeer === message.target) ||
+      (message.target === ethAddress && activePeer === message.sender)
+    ) {
       setMessages((prevMessages) => {
         // Check if this message already exists to prevent duplicates
         const messageExists = prevMessages.some(
@@ -2100,9 +2160,6 @@ const Chat: React.FC = () => {
     // Update the conversations state
     setConversations((prevConversations) => {
       const updatedConversations = { ...prevConversations };
-      // Determine the correct conversation to update based on sender and target
-      const peerAddress =
-        message.sender === ethAddress ? message.target || "" : message.sender;
 
       // Only proceed if we have a valid peer address (Ethereum format)
       if (
@@ -2501,7 +2558,6 @@ const Chat: React.FC = () => {
       // Filter out common system messages that are not important to users
       const systemMessagesToFilter = [
         "stored",
-        "register",
         "queue",
         "mode using port",
         "refresh",
@@ -2527,6 +2583,28 @@ const Chat: React.FC = () => {
       }
     },
     [toast]
+  );
+
+  // Add a function to update peer username
+  const updatePeerUsername = useCallback(
+    (address: string, username: string) => {
+      if (!address || !username || address === ethAddress) return;
+
+      setPeerUsernames((prev) => {
+        // Only update if it's a new username or different from the existing one
+        if (prev[address] !== username) {
+          const updated = { ...prev, [address]: username };
+          // Save to localStorage for persistence
+          localStorage.setItem(
+            STORAGE_KEYS.PEER_USERNAMES,
+            JSON.stringify(updated)
+          );
+          return updated;
+        }
+        return prev;
+      });
+    },
+    [ethAddress]
   );
 
   return (
