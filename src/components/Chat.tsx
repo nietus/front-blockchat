@@ -1917,17 +1917,6 @@ const Chat: React.FC = () => {
       position: "bottom-left",
     });
   };
-
-  // Convert the Set to Array and vice versa in state management
-  const addActuallyConnectedPeer = useCallback((peerAddress: string) => {
-    setActuallyConnectedPeers((prev) => {
-      if (prev.includes(peerAddress)) return prev;
-      return [...prev, peerAddress];
-    });
-
-    // ... existing code ...
-  }, []);
-
   // Fix the removeActuallyConnectedPeer function
   const removeActuallyConnectedPeer = useCallback((peerAddress: string) => {
     setActuallyConnectedPeers((prev) => {
