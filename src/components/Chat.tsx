@@ -241,6 +241,16 @@ const Chat: React.FC = () => {
     }
   );
 
+  // Add a state to store recently shown notifications to prevent duplicates
+  const [recentNotifications, setRecentNotifications] = useState<
+    Record<string, number>
+  >({});
+
+  // Add a new state to track recently processed messages at the WebSocket level
+  const [processedMessages, setProcessedMessages] = useState<
+    Record<string, number>
+  >({});
+
   // Save values to localStorage when they change
   useEffect(() => {
     if (username) {
@@ -840,6 +850,53 @@ const Chat: React.FC = () => {
       ws.onmessage = async (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          // Create a message ID for deduplication
+          let messageId: string | null = null;
+
+          // Only generate messageId for message type events that have timestamp and signature
+          if (
+            data.type === "message" &&
+            data.timestamp &&
+            (data.signature || data.sender)
+          ) {
+            messageId = `${data.signature || ""}_${data.sender}_${
+              data.timestamp
+            }_${data.target || ""}`;
+
+            // Check if we've processed this exact message recently (within 5 seconds)
+            const now = Date.now();
+            const lastProcessed = processedMessages[messageId] || 0;
+            const timeSinceLastProcessed = now - lastProcessed;
+
+            // If we processed this message in the last 5 seconds, ignore it
+            if (messageId && timeSinceLastProcessed < 5000) {
+              console.log(
+                `Ignoring duplicate message (processed ${timeSinceLastProcessed}ms ago): ${messageId}`
+              );
+              return; // Skip processing this duplicate message
+            }
+
+            // Record that we're processing this message
+            if (messageId) {
+              setProcessedMessages((prev) => {
+                const updated = { ...prev };
+                // Use type assertion to ensure TypeScript knows this is a valid key
+                updated[messageId as string] = now;
+                return updated;
+              });
+
+              // Clean up old message records after 10 seconds
+              setTimeout(() => {
+                setProcessedMessages((prev) => {
+                  const updated = { ...prev };
+                  delete updated[messageId as string];
+                  return updated;
+                });
+              }, 10000);
+            }
+          }
+
           console.log("WebSocket message received:", data);
 
           // Handle specific message types
@@ -925,12 +982,12 @@ const Chat: React.FC = () => {
             }
           } else if (
             data.type === "message" &&
-            data.p2pOnly === true &&
             ((data.sender === ethAddress && data.target) ||
               (data.target === ethAddress && data.sender))
           ) {
-            // Handle P2P-only messages specifically for better reliability
-            console.log("Processing a P2P-only message:", data);
+            // Process ANY message type that matches sender/target patterns
+            // This is critical - ensure all messages are processed
+            console.log("Processing a message with sender/target match:", data);
             await processPeerMessage(data);
           }
         } catch (e) {
@@ -958,6 +1015,7 @@ const Chat: React.FC = () => {
     isConnecting,
     connected,
     connectionAttempts,
+    processedMessages, // Add this to the dependency array
   ]);
 
   // Replace connectWebSocket with the new function
@@ -2142,24 +2200,62 @@ const Chat: React.FC = () => {
       addActuallyConnectedPeer(message.sender);
     }
 
-    // Check if this user is the active peer
+    // Improved active conversation check - log for debugging
     const isActiveConversation = activePeer === peerAddress;
+    console.log(
+      `Message from ${peerAddress}, active peer: ${activePeer}, isActive: ${isActiveConversation}`
+    );
+
+    // Generate a unique notification ID based on message content and sender
+    const notificationId = `${peerAddress}_${
+      newMessage.timestamp
+    }_${newMessage.content.substring(0, 20)}`;
 
     // Show notification for new message if it's not from the current active conversation
+    // AND we haven't shown this notification recently
     if (!isActiveConversation && message.sender !== ethAddress) {
-      const senderName =
-        peerUsernames[message.sender] || `${message.sender.substring(0, 6)}...`;
-      toast({
-        title: `New message from ${senderName}`,
-        description:
-          message.content.length > 30
-            ? message.content.substring(0, 30) + "..."
-            : message.content,
-        status: "info",
-        duration: 5000,
-        isClosable: true,
-        position: "bottom-right",
-      });
+      // Check if we've shown this notification recently (in the last 5 seconds)
+      const now = Date.now();
+      const lastShown = recentNotifications[notificationId] || 0;
+      const timeSinceLastShown = now - lastShown;
+
+      if (timeSinceLastShown > 5000) {
+        const senderName =
+          peerUsernames[message.sender] ||
+          `${message.sender.substring(0, 6)}...`;
+
+        // Show the notification
+        toast({
+          title: `New message from ${senderName}`,
+          description:
+            message.content.length > 30
+              ? message.content.substring(0, 30) + "..."
+              : message.content,
+          status: "info",
+          duration: 5000,
+          isClosable: true,
+          position: "bottom-right",
+        });
+
+        // Record that we've shown this notification
+        setRecentNotifications((prev) => ({
+          ...prev,
+          [notificationId]: now,
+        }));
+
+        // Clean up old notifications after 1 minute
+        setTimeout(() => {
+          setRecentNotifications((prev) => {
+            const updated = { ...prev };
+            delete updated[notificationId];
+            return updated;
+          });
+        }, 60000);
+      } else {
+        console.log(
+          `Suppressed duplicate notification (shown ${timeSinceLastShown}ms ago): ${notificationId}`
+        );
+      }
     }
 
     // Update the UI immediately if this is for the active conversation
@@ -2172,7 +2268,14 @@ const Chat: React.FC = () => {
             msg.timestamp === newMessage.timestamp
         );
 
-        if (messageExists) return prevMessages;
+        if (messageExists) {
+          console.log(
+            "Message already exists in active conversation, skipping"
+          );
+          return prevMessages;
+        }
+
+        console.log("Adding new message to active conversation UI");
         return [...prevMessages, newMessage];
       });
 
@@ -2181,6 +2284,10 @@ const Chat: React.FC = () => {
         chatContainerRef.current.scrollTop =
           chatContainerRef.current.scrollHeight;
       }
+    } else {
+      console.log(
+        "Message not for active conversation, not updating UI directly"
+      );
     }
 
     // Update the conversations state
@@ -2215,6 +2322,20 @@ const Chat: React.FC = () => {
           unreadCount: activePeer !== peerAddress ? 1 : 0,
         };
       }
+
+      // If this is the active conversation, also update messages state to ensure UI sync
+      if (activePeer === peerAddress) {
+        // Force update of the messages array for active conversation
+        setTimeout(() => {
+          if (activePeer === peerAddress) {
+            console.log(
+              "Force syncing active conversation messages with conversation state"
+            );
+            setMessages(updatedConversations[peerAddress].messages);
+          }
+        }, 50);
+      }
+
       return updatedConversations;
     });
   };
@@ -2448,6 +2569,13 @@ const Chat: React.FC = () => {
           position: "bottom-left",
         });
 
+        // Enhanced P2P reconnection sequence
+        // Store all existing peers before attempting reconnection
+        const peersToReconnect = [...actuallyConnectedPeers];
+
+        // First clear the connection state to start fresh
+        setActuallyConnectedPeers([]);
+
         // Send multiple NAT detection requests to ensure it's processed
         // First immediate request
         sendNatPortRequest(addressToUse);
@@ -2462,7 +2590,7 @@ const Chat: React.FC = () => {
           }
         }, 1000);
 
-        // Final request with longer delay for reliability
+        // Final connection sequence with longer delay for reliability
         setTimeout(() => {
           if (
             globalWebSocketRef.current &&
@@ -2473,15 +2601,77 @@ const Chat: React.FC = () => {
             // Also refresh messages to ensure proper connection
             forceRefreshMessages(true);
 
-            // If we have an active peer, automatically reconnect to ensure P2P connection
-            if (activePeer && !actuallyConnectedPeers.includes(activePeer)) {
+            // Improved peer reconnection logic: reconnect to all previously connected peers
+            if (peersToReconnect.length > 0) {
               console.log(
-                "Automatically reconnecting to active peer in P2P-only mode"
+                `Attempting to reconnect to ${peersToReconnect.length} peers`
               );
-              connectToPeer(activePeer);
+
+              // If we have an active peer, reconnect to it first
+              if (activePeer) {
+                console.log(`Reconnecting to active peer: ${activePeer}`);
+                connectToPeer(activePeer);
+
+                // Then reconnect to other peers with a delay
+                setTimeout(() => {
+                  peersToReconnect.forEach((peer) => {
+                    if (peer !== activePeer) {
+                      console.log(`Reconnecting to peer: ${peer}`);
+                      // Use a special version of connectToPeer that doesn't set as active
+                      const connectMessage = {
+                        type: "connect_peer",
+                        target: peer,
+                        sender: addressToUse,
+                        content: `Connect to ${peer}`,
+                      };
+                      if (
+                        globalWebSocketRef.current &&
+                        globalWebSocketRef.current.readyState === WebSocket.OPEN
+                      ) {
+                        globalWebSocketRef.current.send(
+                          JSON.stringify(connectMessage)
+                        );
+                      }
+                    }
+                  });
+                }, 1000);
+              } else {
+                // No active peer, just reconnect to all
+                peersToReconnect.forEach((peer, index) => {
+                  // Stagger connections to avoid overwhelming the system
+                  setTimeout(() => {
+                    console.log(`Reconnecting to peer: ${peer}`);
+                    // Connect only to the first peer as active
+                    if (index === 0) {
+                      connectToPeer(peer);
+                    } else {
+                      // For others, just send connect message
+                      const connectMessage = {
+                        type: "connect_peer",
+                        target: peer,
+                        sender: addressToUse,
+                        content: `Connect to ${peer}`,
+                      };
+                      if (
+                        globalWebSocketRef.current &&
+                        globalWebSocketRef.current.readyState === WebSocket.OPEN
+                      ) {
+                        globalWebSocketRef.current.send(
+                          JSON.stringify(connectMessage)
+                        );
+                      }
+                    }
+                  }, index * 500); // 500ms delay between each connection
+                });
+              }
             }
           }
         }, 2500);
+      } else {
+        // If switching to blockchain mode, do a refresh to load messages
+        setTimeout(() => {
+          forceRefreshMessages(true);
+        }, 1000);
       }
     } catch (error) {
       console.error("Error handling mode switch:", error);
@@ -2649,6 +2839,22 @@ const Chat: React.FC = () => {
       }
     }
   };
+
+  // Add effect to keep messages in sync with the active conversation
+  useEffect(() => {
+    if (activePeer && conversations[activePeer]) {
+      console.log(`Syncing messages with active conversation: ${activePeer}`);
+      setMessages(conversations[activePeer].messages);
+    }
+  }, [activePeer, conversations]);
+
+  // Effect to scroll chat to bottom when messages change
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop =
+        chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   return (
     <Box height="100vh" display="flex" flexDirection="column">
