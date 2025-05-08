@@ -270,7 +270,7 @@ const Chat: React.FC = () => {
     }
   }, [activePeer]);
 
-  // Add auto-reconnect on page load if we have saved credentials
+  // Add effect to auto-reconnect on page load if we have saved credentials
   useEffect(() => {
     // Only attempt auto-reconnect if the user has already logged in
     // and we have both ethereum address and username
@@ -279,7 +279,7 @@ const Chat: React.FC = () => {
       // Short delay to ensure the UI is fully loaded
       const reconnectTimeout = setTimeout(() => {
         // When auto-reconnecting, don't show the connecting indicator
-        connectWallet(true); // Pass true to indicate this is an auto-reconnect
+        initiateConnection(true); // Pass true to indicate this is an auto-reconnect
       }, 1000);
 
       return () => clearTimeout(reconnectTimeout);
@@ -2131,13 +2131,50 @@ const Chat: React.FC = () => {
     const peerAddress =
       message.sender === ethAddress ? message.target : message.sender;
 
-    // Update the UI immediately if this is for the active conversation
-    // Check if the active peer matches EITHER the sender OR target of the message
+    // Skip invalid peer addresses
     if (
-      activePeer === message.sender ||
-      (message.sender === ethAddress && activePeer === message.target) ||
-      (message.target === ethAddress && activePeer === message.sender)
+      !peerAddress ||
+      !peerAddress.startsWith("0x") ||
+      peerAddress.length !== 42
     ) {
+      console.error("Invalid peer address in message:", peerAddress);
+      return;
+    }
+
+    // If we receive a P2P message and the sender is not in our actually connected peers,
+    // add them to keep the connection active
+    if (
+      message.sender !== ethAddress &&
+      !actuallyConnectedPeers.includes(message.sender)
+    ) {
+      console.log(
+        `Adding sender ${message.sender} to connected peers from message`
+      );
+      addActuallyConnectedPeer(message.sender);
+    }
+
+    // Check if this user is the active peer
+    const isActiveConversation = activePeer === peerAddress;
+
+    // Show notification for new message if it's not from the current active conversation
+    if (!isActiveConversation && message.sender !== ethAddress) {
+      const senderName =
+        peerUsernames[message.sender] || `${message.sender.substring(0, 6)}...`;
+      toast({
+        title: `New message from ${senderName}`,
+        description:
+          message.content.length > 30
+            ? message.content.substring(0, 30) + "..."
+            : message.content,
+        status: "info",
+        duration: 5000,
+        isClosable: true,
+        position: "bottom-right",
+      });
+    }
+
+    // Update the UI immediately if this is for the active conversation
+    if (isActiveConversation) {
       setMessages((prevMessages) => {
         // Check if this message already exists to prevent duplicates
         const messageExists = prevMessages.some(
@@ -2160,15 +2197,6 @@ const Chat: React.FC = () => {
     // Update the conversations state
     setConversations((prevConversations) => {
       const updatedConversations = { ...prevConversations };
-
-      // Only proceed if we have a valid peer address (Ethereum format)
-      if (
-        !peerAddress ||
-        !peerAddress.startsWith("0x") ||
-        peerAddress.length !== 42
-      ) {
-        return updatedConversations;
-      }
 
       if (updatedConversations[peerAddress]) {
         // Check if this message already exists in the conversation
@@ -2202,7 +2230,139 @@ const Chat: React.FC = () => {
     });
   };
 
-  // Update the handleModeSwitch function
+  // Add forceRefreshMessages function
+  const forceRefreshMessages = async (forceIgnoreBlockchainMode = false) => {
+    console.log(
+      "Forcing message refresh with saveToBlockchain =",
+      saveToBlockchain
+    );
+
+    try {
+      // Check if we should skip blockchain operations completely
+      if (!saveToBlockchain && !forceIgnoreBlockchainMode) {
+        console.log(
+          "Skipping blockchain fetch because saveToBlockchain is false"
+        );
+        // In P2P-only mode, still refresh P2P messages
+        refreshP2PMessages();
+        return; // Exit early to avoid any blockchain operations
+      }
+
+      // Only proceed with blockchain operations if saveToBlockchain is true or we're forcing it
+      if (saveToBlockchain || forceIgnoreBlockchainMode) {
+        console.log(
+          `Fetching blockchain messages (saveToBlockchain: ${saveToBlockchain}, force: ${forceIgnoreBlockchainMode})`
+        );
+        await fetchBlockchainMessages(true);
+      }
+
+      // Update the connected peers from blockchain data
+      if (ethAddress && (saveToBlockchain || forceIgnoreBlockchainMode)) {
+        const peers = await fetchBlockchainMessages(true);
+        setConnectedPeers(new Set(peers));
+      }
+
+      // Always send P2P refresh requests regardless of saveToBlockchain
+      if (
+        globalWebSocketRef.current &&
+        globalWebSocketRef.current.readyState === WebSocket.OPEN
+      ) {
+        try {
+          const refreshRequest = {
+            type: "refresh_request",
+            sender: ethAddress,
+            timestamp: Date.now(),
+            content: "Refresh request", // Add content field to fix backend errors
+          };
+          globalWebSocketRef.current.send(JSON.stringify(refreshRequest));
+          console.log("Sent refresh request to peers");
+
+          // If we have an active peer, send a direct refresh request to ensure they respond
+          if (activePeer) {
+            const directRefreshRequest = {
+              type: "refresh_request",
+              sender: ethAddress,
+              target: activePeer,
+              timestamp: Date.now(),
+              content: "Direct refresh request",
+            };
+            globalWebSocketRef.current.send(
+              JSON.stringify(directRefreshRequest)
+            );
+            console.log(
+              `Sent direct refresh request to active peer: ${activePeer}`
+            );
+          }
+        } catch (error) {
+          console.error("Error sending refresh request:", error);
+          // If there's an error sending, try to reconnect
+          if (globalWebSocketRef.current.readyState !== WebSocket.OPEN) {
+            connectWebSocket();
+          }
+        }
+      } else {
+        console.log("WebSocket not open, trying to reconnect...");
+        connectWebSocket(); // Try to reconnect if socket isn't open
+      }
+    } catch (error) {
+      console.error("Error during force refresh:", error);
+    }
+  };
+
+  const processSystemMessage = useCallback(
+    (content: string) => {
+      // Filter out common system messages that are not important to users
+      const systemMessagesToFilter = [
+        "stored",
+        "queue",
+        "mode using port",
+        "refresh",
+      ];
+
+      // Check if this message contains any filtered terms
+      const shouldFilter = systemMessagesToFilter.some((term) =>
+        content.toLowerCase().includes(term.toLowerCase())
+      );
+
+      if (!shouldFilter) {
+        // This is a message worth showing to the user
+        toast({
+          title: content, // Just use content as the title for cleaner appearance
+          status: "success", // Use success status for green color
+          duration: 3000,
+          isClosable: true,
+          position: "bottom-left", // Position on the bottom-left
+        });
+      } else {
+        // Just log filtered messages to console
+        console.log("System message (filtered from UI):", content);
+      }
+    },
+    [toast]
+  );
+
+  // Helper function to send NAT port request
+  const sendNatPortRequest = (addressToUse: string) => {
+    if (
+      !globalWebSocketRef.current ||
+      globalWebSocketRef.current.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    const natModeMessage = {
+      type: "p2p_use_nat_port",
+      sender: addressToUse,
+      target: addressToUse,
+      nat_address: "", // Empty string triggers automatic NAT detection
+      content: "Request to use NAT port for P2P-only mode",
+      timestamp: Date.now(),
+    };
+    console.log("Requesting NAT port usage:", natModeMessage);
+    globalWebSocketRef.current.send(JSON.stringify(natModeMessage));
+  };
+
+  // Handle mode switch between blockchain and P2P-only mode
   const handleModeSwitch = (newSaveToBlockchain: boolean) => {
     try {
       // Skip if the mode is already set
@@ -2323,6 +2483,14 @@ const Chat: React.FC = () => {
 
             // Also refresh messages to ensure proper connection
             forceRefreshMessages(true);
+
+            // If we have an active peer, automatically reconnect to ensure P2P connection
+            if (activePeer && !actuallyConnectedPeers.includes(activePeer)) {
+              console.log(
+                "Automatically reconnecting to active peer in P2P-only mode"
+              );
+              connectToPeer(activePeer);
+            }
           }
         }, 2500);
       }
@@ -2331,29 +2499,48 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Helper function to send NAT port request
-  const sendNatPortRequest = (addressToUse: string) => {
-    if (
-      !globalWebSocketRef.current ||
-      globalWebSocketRef.current.readyState !== WebSocket.OPEN
-    ) {
-      return;
-    }
+  // Add a function to update peer username
+  const updatePeerUsername = useCallback(
+    (address: string, username: string) => {
+      if (!address || !username || address === ethAddress) return;
 
-    const natModeMessage = {
-      type: "p2p_use_nat_port",
-      sender: addressToUse,
-      target: addressToUse,
-      nat_address: "", // Empty string triggers automatic NAT detection
-      content: "Request to use NAT port for P2P-only mode",
-      timestamp: Date.now(),
-    };
-    console.log("Requesting NAT port usage:", natModeMessage);
-    globalWebSocketRef.current.send(JSON.stringify(natModeMessage));
-  };
+      setPeerUsernames((prev) => {
+        // Only update if it's a new username or different from the existing one
+        if (prev[address] !== username) {
+          const updated = { ...prev, [address]: username };
+          // Save to localStorage for persistence
+          localStorage.setItem(
+            STORAGE_KEYS.PEER_USERNAMES,
+            JSON.stringify(updated)
+          );
+          return updated;
+        }
+        return prev;
+      });
+    },
+    [ethAddress]
+  );
+
+  // Helper function to add a peer to the actually connected peers list
+  const addActuallyConnectedPeer = useCallback(
+    (peerAddress: string) => {
+      if (!peerAddress || peerAddress === ethAddress) return;
+
+      setActuallyConnectedPeers((prevPeers) => {
+        if (prevPeers.includes(peerAddress)) {
+          return prevPeers; // Don't add duplicates
+        }
+        // Add the peer and also ensure it's in the connected peers set
+        setConnectedPeers((prev) => new Set([...prev, peerAddress]));
+        console.log(`Added ${peerAddress} to actually connected peers`);
+        return [...prevPeers, peerAddress];
+      });
+    },
+    [ethAddress]
+  );
 
   // Main connection function
-  const connectWallet = async (isAutoReconnect = false) => {
+  const initiateConnection = async (isAutoReconnect = false) => {
     try {
       // Clear any existing state first
       setConnectedPeers(new Set());
@@ -2474,139 +2661,6 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Add forceRefreshMessages function
-  const forceRefreshMessages = async (forceIgnoreBlockchainMode = false) => {
-    console.log(
-      "Forcing message refresh with saveToBlockchain =",
-      saveToBlockchain
-    );
-
-    try {
-      // Check if we should skip blockchain operations completely
-      if (!saveToBlockchain && !forceIgnoreBlockchainMode) {
-        console.log(
-          "Skipping blockchain fetch because saveToBlockchain is false"
-        );
-        // In P2P-only mode, still refresh P2P messages
-        refreshP2PMessages();
-        return; // Exit early to avoid any blockchain operations
-      }
-
-      // Only proceed with blockchain operations if saveToBlockchain is true or we're forcing it
-      if (saveToBlockchain || forceIgnoreBlockchainMode) {
-        console.log(
-          `Fetching blockchain messages (saveToBlockchain: ${saveToBlockchain}, force: ${forceIgnoreBlockchainMode})`
-        );
-        await fetchBlockchainMessages(true);
-      }
-
-      // Update the connected peers from blockchain data
-      if (ethAddress && (saveToBlockchain || forceIgnoreBlockchainMode)) {
-        const peers = await fetchBlockchainMessages(true);
-        setConnectedPeers(new Set(peers));
-      }
-
-      // Always send P2P refresh requests regardless of saveToBlockchain
-      if (
-        globalWebSocketRef.current &&
-        globalWebSocketRef.current.readyState === WebSocket.OPEN
-      ) {
-        try {
-          const refreshRequest = {
-            type: "refresh_request",
-            sender: ethAddress,
-            timestamp: Date.now(),
-            content: "Refresh request", // Add content field to fix backend errors
-          };
-          globalWebSocketRef.current.send(JSON.stringify(refreshRequest));
-          console.log("Sent refresh request to peers");
-
-          // If we have an active peer, send a direct refresh request to ensure they respond
-          if (activePeer) {
-            const directRefreshRequest = {
-              type: "refresh_request",
-              sender: ethAddress,
-              target: activePeer,
-              timestamp: Date.now(),
-              content: "Direct refresh request",
-            };
-            globalWebSocketRef.current.send(
-              JSON.stringify(directRefreshRequest)
-            );
-            console.log(
-              `Sent direct refresh request to active peer: ${activePeer}`
-            );
-          }
-        } catch (error) {
-          console.error("Error sending refresh request:", error);
-          // If there's an error sending, try to reconnect
-          if (globalWebSocketRef.current.readyState !== WebSocket.OPEN) {
-            connectWebSocket();
-          }
-        }
-      } else {
-        console.log("WebSocket not open, trying to reconnect...");
-        connectWebSocket(); // Try to reconnect if socket isn't open
-      }
-    } catch (error) {
-      console.error("Error during force refresh:", error);
-    }
-  };
-
-  const processSystemMessage = useCallback(
-    (content: string) => {
-      // Filter out common system messages that are not important to users
-      const systemMessagesToFilter = [
-        "stored",
-        "queue",
-        "mode using port",
-        "refresh",
-      ];
-
-      // Check if this message contains any filtered terms
-      const shouldFilter = systemMessagesToFilter.some((term) =>
-        content.toLowerCase().includes(term.toLowerCase())
-      );
-
-      if (!shouldFilter) {
-        // This is a message worth showing to the user
-        toast({
-          title: content, // Just use content as the title for cleaner appearance
-          status: "success", // Use success status for green color
-          duration: 3000,
-          isClosable: true,
-          position: "bottom-left", // Position on the bottom-left
-        });
-      } else {
-        // Just log filtered messages to console
-        console.log("System message (filtered from UI):", content);
-      }
-    },
-    [toast]
-  );
-
-  // Add a function to update peer username
-  const updatePeerUsername = useCallback(
-    (address: string, username: string) => {
-      if (!address || !username || address === ethAddress) return;
-
-      setPeerUsernames((prev) => {
-        // Only update if it's a new username or different from the existing one
-        if (prev[address] !== username) {
-          const updated = { ...prev, [address]: username };
-          // Save to localStorage for persistence
-          localStorage.setItem(
-            STORAGE_KEYS.PEER_USERNAMES,
-            JSON.stringify(updated)
-          );
-          return updated;
-        }
-        return prev;
-      });
-    },
-    [ethAddress]
-  );
-
   return (
     <Box height="100vh" display="flex" flexDirection="column">
       {ethAddress && <P2PServiceDownloader connectedStatus={connected} />}
@@ -2725,7 +2779,7 @@ const Chat: React.FC = () => {
                   </FormControl>
                   <Button
                     colorScheme="blue"
-                    onClick={() => connectWallet(false)}
+                    onClick={() => initiateConnection(false)}
                     width="100%"
                     size="lg"
                     isLoading={loginButtonConnecting}
@@ -3076,23 +3130,6 @@ const Chat: React.FC = () => {
                               formatTime={formatMessageDate}
                               formatPeerName={formatPeerName}
                             />
-                            {msg.p2pOnly && (
-                              <Badge
-                                ml={1}
-                                colorScheme="purple"
-                                fontSize="xs"
-                                position="absolute"
-                                bottom="0"
-                                right={
-                                  msg.sender === ethAddress ? "10px" : "auto"
-                                }
-                                left={
-                                  msg.sender !== ethAddress ? "10px" : "auto"
-                                }
-                              >
-                                P2P only
-                              </Badge>
-                            )}
                           </ListItem>
                         ))}
                       </List>
