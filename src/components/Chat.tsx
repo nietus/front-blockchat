@@ -2435,10 +2435,18 @@ const Chat: React.FC = () => {
       );
 
       if (!shouldFilter) {
+        // Check if the message indicates an error or failure
+        const isErrorMessage =
+          content.toLowerCase().includes("fail") ||
+          content.toLowerCase().includes("error") ||
+          content.toLowerCase().includes("invalid") ||
+          content.toLowerCase().includes("cannot") ||
+          content.toLowerCase().includes("rejected");
+
         // This is a message worth showing to the user
         toast({
           title: content, // Just use content as the title for cleaner appearance
-          status: "success", // Use success status for green color
+          status: isErrorMessage ? "error" : "success", // Use error status for red color if it's an error
           duration: 3000,
           isClosable: true,
           position: "bottom-left", // Position on the bottom-left
