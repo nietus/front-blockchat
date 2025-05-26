@@ -4,7 +4,7 @@ export const config = {
   blockchain: {
     // Use Railway deployed URLs in production, local URLs in development
     baseUrl: process.env.NODE_ENV === 'production' 
-      ? 'https://blockchain-bc-production.up.railway.app/node0'
+      ? 'https://blockchain-blockchat.onrender.com/node0'
       : 'http://localhost:8003',
     chainEndpoint: '/chain',
     newTransactionEndpoint: '/new_transaction',
@@ -13,7 +13,7 @@ export const config = {
   // WebSocket configuration
   websocket: {
     url: process.env.NODE_ENV === 'production'
-      ? 'wss://blockchain-bc-production.up.railway.app/node0/ws'
+      ? 'wss://blockchain-blockchat.onrender.com/node0/ws'
       : `ws://localhost:8081`
   },
   // Relay server configuration

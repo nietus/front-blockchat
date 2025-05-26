@@ -397,7 +397,7 @@ const Chat: React.FC = () => {
 
       // Fetch the blockchain data
       const response = await fetch(
-        "https://blockchain-bc-production.up.railway.app/node0/chain"
+        "https://blockchain-blockchat.onrender.com/node0/chain"
       );
 
       if (response.status === 200) {
@@ -1253,7 +1253,7 @@ const Chat: React.FC = () => {
   ) => {
     try {
       console.log(
-        `Posting message to blockchain at https://blockchain-bc-production.up.railway.app/node0...`
+        `Posting message to blockchain at https://blockchain-blockchat.onrender.com/node0...`
       );
 
       const txData = {
@@ -1266,7 +1266,7 @@ const Chat: React.FC = () => {
       };
 
       const response = await fetch(
-        "https://blockchain-bc-production.up.railway.app/node0/new_transaction",
+        "https://blockchain-blockchat.onrender.com/node0/new_transaction",
         {
           method: "POST",
           headers: {
@@ -1281,7 +1281,7 @@ const Chat: React.FC = () => {
 
         // Mine the block to include the transaction
         const mineResponse = await fetch(
-          "https://blockchain-bc-production.up.railway.app/node0/mine"
+          "https://blockchain-blockchat.onrender.com/node0/mine"
         );
 
         if (mineResponse.status === 200) {
