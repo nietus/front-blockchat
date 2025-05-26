@@ -1007,13 +1007,23 @@ const Chat: React.FC = () => {
             console.log(`Ping sent to ${data.target} with ID ${data.ping_id}`);
             setPendingPings((prev) => ({
               ...prev,
-              [data.ping_id]: data.timestamp,
+              [data.ping_id]: data.timestamp / 1000, // Convert microseconds to milliseconds
             }));
           } else if (data.type === "ping_received") {
             // Handle ping received notification
             console.log(
               `Ping received from ${data.sender} with ID ${data.ping_id}`
             );
+
+            // Show toast notification for received ping
+            toast({
+              title: `Ping Received`,
+              description: `Received ping from ${formatPeerName(data.sender)}`,
+              status: "info",
+              duration: 2000,
+              isClosable: true,
+              position: "bottom-right",
+            });
           } else if (data.type === "latency_measurement") {
             // Handle latency measurement result
             console.log(
