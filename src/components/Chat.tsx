@@ -32,7 +32,13 @@ import {
 } from "@chakra-ui/react";
 import Web3 from "web3";
 import { AES, enc } from "crypto-js";
-import { FiSend, FiChevronLeft, FiCopy } from "react-icons/fi";
+import {
+  FiSend,
+  FiChevronLeft,
+  FiCopy,
+  FiActivity,
+  FiSettings,
+} from "react-icons/fi";
 import Menssage from "./menssage/Menssage";
 import P2PServiceDownloader from "../components/P2PServiceDownloader";
 
@@ -52,6 +58,14 @@ interface Message {
   saveToBlockchain?: boolean;
   p2pOnly?: boolean; // New field to identify P2P-only messages
   senderUsername?: string; // New field to store the username of the sender
+}
+
+interface LatencyMeasurement {
+  target: string;
+  latency_ms: number;
+  timestamp: number;
+  mode: "blockchain" | "p2p";
+  ping_id: string;
 }
 
 interface Conversation {
@@ -250,6 +264,14 @@ const Chat: React.FC = () => {
   const [processedMessages, setProcessedMessages] = useState<
     Record<string, number>
   >({});
+
+  // Ping-pong latency measurement states
+  const [pingEnabled, setPingEnabled] = useState<boolean>(true);
+  const [latencyMeasurements, setLatencyMeasurements] = useState<
+    Record<string, LatencyMeasurement[]>
+  >({});
+  const [pendingPings, setPendingPings] = useState<Record<string, number>>({});
+  const [showLatencyPanel, setShowLatencyPanel] = useState<boolean>(false);
 
   // Save values to localStorage when they change
   useEffect(() => {
@@ -980,6 +1002,93 @@ const Chat: React.FC = () => {
                 connectToPeer(senderAddress);
               }
             }
+          } else if (data.type === "ping_sent") {
+            // Handle ping sent notification
+            console.log(`Ping sent to ${data.target} with ID ${data.ping_id}`);
+            setPendingPings((prev) => ({
+              ...prev,
+              [data.ping_id]: data.timestamp,
+            }));
+          } else if (data.type === "ping_received") {
+            // Handle ping received notification
+            console.log(
+              `Ping received from ${data.sender} with ID ${data.ping_id}`
+            );
+          } else if (data.type === "latency_measurement") {
+            // Handle latency measurement result
+            console.log(
+              `Latency measurement: ${data.latency_ms}ms to ${data.target} (${data.mode} mode)`
+            );
+
+            const measurement: LatencyMeasurement = {
+              target: data.target,
+              latency_ms: data.latency_ms,
+              timestamp: data.timestamp,
+              mode: data.mode,
+              ping_id: data.ping_id,
+            };
+
+            setLatencyMeasurements((prev) => {
+              const targetMeasurements = prev[data.target] || [];
+              const updatedMeasurements = [...targetMeasurements, measurement];
+
+              // Keep only the last 10 measurements per target
+              if (updatedMeasurements.length > 10) {
+                updatedMeasurements.shift();
+              }
+
+              return {
+                ...prev,
+                [data.target]: updatedMeasurements,
+              };
+            });
+
+            // Remove from pending pings
+            setPendingPings((prev) => {
+              const updated = { ...prev };
+              delete updated[data.ping_id];
+              return updated;
+            });
+
+            // Show toast notification
+            toast({
+              title: `Latency Measurement`,
+              description: `${data.latency_ms}ms to ${formatPeerName(
+                data.target
+              )} (${data.mode} mode)`,
+              status: "info",
+              duration: 3000,
+              isClosable: true,
+              position: "bottom-right",
+            });
+          } else if (data.type === "ping_timeout") {
+            // Handle ping timeout
+            console.log(
+              `Ping timeout to ${data.target} with ID ${data.ping_id}`
+            );
+
+            // Remove from pending pings
+            setPendingPings((prev) => {
+              const updated = { ...prev };
+              delete updated[data.ping_id];
+              return updated;
+            });
+
+            // Show timeout notification
+            toast({
+              title: `Ping Timeout`,
+              description: `No response from ${formatPeerName(data.target)}`,
+              status: "warning",
+              duration: 3000,
+              isClosable: true,
+              position: "bottom-right",
+            });
+          } else if (data.type === "ping_status") {
+            // Handle ping status updates
+            setPingEnabled(data.enabled);
+            console.log(
+              `Ping-pong measurement ${data.enabled ? "enabled" : "disabled"}`
+            );
           } else if (
             data.type === "message" &&
             ((data.sender === ethAddress && data.target) ||
@@ -2435,23 +2544,7 @@ const Chat: React.FC = () => {
       );
 
       if (!shouldFilter) {
-        // Check if the message indicates an error or failure
-        const isErrorMessage =
-          content.toLowerCase().includes("fail") ||
-          content.toLowerCase().includes("error") ||
-          content.toLowerCase().includes("invalid") ||
-          content.toLowerCase().includes("cannot") ||
-          content.toLowerCase().includes("rejected");
-
-        // This is a message worth showing to the user
-        toast({
-          title: content, // Just use content as the title for cleaner appearance
-          status: isErrorMessage ? "error" : "success", // Use error status for red color if it's an error
-          duration: 3000,
-          isClosable: true,
-          position: "bottom-left", // Position on the bottom-left
-        });
-      } else {
+        // Check if the message indicates an error or failure        const isErrorMessage = content.toLowerCase().includes("fail") ||           content.toLowerCase().includes("error") ||          content.toLowerCase().includes("invalid") ||          content.toLowerCase().includes("cannot") ||          content.toLowerCase().includes("rejected");                  // This is a message worth showing to the user        toast({          title: content, // Just use content as the title for cleaner appearance          status: isErrorMessage ? "error" : "success", // Use error status for red color if it's an error          duration: 3000,          isClosable: true,          position: "bottom-left", // Position on the bottom-left        });      } else {
         // Just log filtered messages to console
         console.log("System message (filtered from UI):", content);
       }
@@ -2478,6 +2571,60 @@ const Chat: React.FC = () => {
     };
     console.log("Requesting NAT port usage:", natModeMessage);
     globalWebSocketRef.current.send(JSON.stringify(natModeMessage));
+  };
+
+  // Ping control functions
+  const sendPingControlMessage = (action: string, target?: string) => {
+    if (
+      !globalWebSocketRef.current ||
+      globalWebSocketRef.current.readyState !== WebSocket.OPEN
+    ) {
+      console.warn("WebSocket not ready for ping control");
+      return;
+    }
+
+    const pingControlMessage = {
+      type: "ping_control",
+      action: action,
+      target: target,
+    };
+    globalWebSocketRef.current.send(JSON.stringify(pingControlMessage));
+    console.log(`Sent ping control: ${action}${target ? ` to ${target}` : ""}`);
+  };
+
+  const togglePingEnabled = () => {
+    const newState = !pingEnabled;
+    sendPingControlMessage(newState ? "enable" : "disable");
+  };
+
+  const sendManualPing = (target: string) => {
+    if (!target || target === ethAddress) {
+      toast({
+        title: "Invalid Target",
+        description: "Cannot ping yourself or empty target",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+        position: "bottom-right",
+      });
+      return;
+    }
+    sendPingControlMessage("send_ping", target);
+  };
+
+  const getAverageLatency = (target: string): number | null => {
+    const measurements = latencyMeasurements[target];
+    if (!measurements || measurements.length === 0) return null;
+
+    const sum = measurements.reduce((acc, m) => acc + m.latency_ms, 0);
+    return Math.round(sum / measurements.length);
+  };
+
+  const getLatestLatency = (target: string): number | null => {
+    const measurements = latencyMeasurements[target];
+    if (!measurements || measurements.length === 0) return null;
+
+    return measurements[measurements.length - 1].latency_ms;
   };
 
   // Handle mode switch between blockchain and P2P-only mode
@@ -2914,6 +3061,24 @@ const Chat: React.FC = () => {
                     Disconnected
                   </Badge>
                 )}
+                <IconButton
+                  size={["xs", "sm"]}
+                  onClick={() => setShowLatencyPanel(true)}
+                  colorScheme="purple"
+                  variant="outline"
+                  aria-label="Ping Dashboard"
+                  icon={<FiActivity />}
+                  title="Ping Dashboard"
+                />
+                <IconButton
+                  size={["xs", "sm"]}
+                  onClick={onOpenSettings}
+                  colorScheme="gray"
+                  variant="outline"
+                  aria-label="Settings"
+                  icon={<FiSettings />}
+                  title="Settings"
+                />
                 <Button
                   size={["xs", "sm"]}
                   onClick={handleLogoff}
@@ -3020,15 +3185,26 @@ const Chat: React.FC = () => {
                   <Divider mb={2} borderColor="gray.700" />
 
                   {ethAddress && (
-                    <Button
-                      size="sm"
-                      onClick={onOpen}
-                      colorScheme="blue"
-                      width="full"
-                      mb={2}
-                    >
-                      Connect to New Peer
-                    </Button>
+                    <VStack spacing={2} width="full">
+                      <Button
+                        size="sm"
+                        onClick={onOpen}
+                        colorScheme="blue"
+                        width="full"
+                      >
+                        Connect to New Peer
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={onOpenSettings}
+                        colorScheme="purple"
+                        variant="outline"
+                        width="full"
+                        leftIcon={<FiSettings />}
+                      >
+                        Settings
+                      </Button>
+                    </VStack>
                   )}
 
                   {getSortedConversations().length > 0 ? (
@@ -3145,9 +3321,19 @@ const Chat: React.FC = () => {
                       Active Conversations
                     </Text>
                     {ethAddress && (
-                      <Button size="xs" onClick={onOpen} colorScheme="blue">
-                        Connect New
-                      </Button>
+                      <HStack spacing={1}>
+                        <Button size="xs" onClick={onOpen} colorScheme="blue">
+                          Connect New
+                        </Button>
+                        <IconButton
+                          size="xs"
+                          onClick={onOpenSettings}
+                          colorScheme="purple"
+                          variant="outline"
+                          aria-label="Settings"
+                          icon={<FiSettings />}
+                        />
+                      </HStack>
                     )}
                   </HStack>
                   <Box overflowX="auto" pb={2}>
@@ -3516,12 +3702,234 @@ const Chat: React.FC = () => {
                 </FormControl>
 
                 <Divider borderColor="gray.700" />
+
+                <FormControl display="flex" alignItems="center">
+                  <FormLabel htmlFor="ping-enabled" mb="0">
+                    Ping-Pong Latency Measurement
+                  </FormLabel>
+                  <Switch
+                    id="ping-enabled"
+                    colorScheme="cyan"
+                    isChecked={pingEnabled}
+                    onChange={togglePingEnabled}
+                  />
+                </FormControl>
+
+                <Button
+                  colorScheme="purple"
+                  variant="outline"
+                  onClick={() => setShowLatencyPanel(true)}
+                  leftIcon={<FiActivity />}
+                >
+                  View Latency Dashboard
+                </Button>
               </VStack>
             </ModalBody>
 
             <ModalFooter borderTopWidth="1px" borderColor="gray.700">
               <Button colorScheme="cyan" mr={3} onClick={onCloseSettings}>
                 Save
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        {/* Latency Dashboard Modal */}
+        <Modal
+          isOpen={showLatencyPanel}
+          onClose={() => setShowLatencyPanel(false)}
+          size="xl"
+        >
+          <ModalOverlay />
+          <ModalContent bg="gray.800" color="white" maxW="800px">
+            <ModalHeader borderBottomWidth="1px" borderColor="gray.700">
+              <HStack>
+                <FiActivity />
+                <Text>Latency Dashboard</Text>
+                <Badge
+                  colorScheme={pingEnabled ? "green" : "red"}
+                  variant="outline"
+                >
+                  {pingEnabled ? "Enabled" : "Disabled"}
+                </Badge>
+              </HStack>
+            </ModalHeader>
+            <ModalCloseButton />
+            <ModalBody py={4}>
+              <VStack spacing={4} align="stretch">
+                {/* Ping Controls */}
+                <Box p={4} bg="gray.700" borderRadius="md">
+                  <VStack spacing={3} align="stretch">
+                    <HStack justifyContent="space-between">
+                      <Text fontWeight="bold">Ping Controls</Text>
+                      <Button
+                        size="sm"
+                        colorScheme={pingEnabled ? "red" : "green"}
+                        onClick={togglePingEnabled}
+                      >
+                        {pingEnabled ? "Disable" : "Enable"} Ping
+                      </Button>
+                    </HStack>
+
+                    {actuallyConnectedPeers.length > 0 && (
+                      <VStack spacing={2} align="stretch">
+                        <Text fontSize="sm" color="gray.300">
+                          Send manual ping to:
+                        </Text>
+                        <HStack wrap="wrap" spacing={2}>
+                          {actuallyConnectedPeers.map((peer) => (
+                            <Button
+                              key={peer}
+                              size="sm"
+                              variant="outline"
+                              colorScheme="cyan"
+                              onClick={() => sendManualPing(peer)}
+                              isDisabled={!pingEnabled}
+                            >
+                              Ping {formatPeerName(peer)}
+                            </Button>
+                          ))}
+                        </HStack>
+                      </VStack>
+                    )}
+                  </VStack>
+                </Box>
+
+                {/* Pending Pings */}
+                {Object.keys(pendingPings).length > 0 && (
+                  <Box p={4} bg="gray.700" borderRadius="md">
+                    <Text fontWeight="bold" mb={2}>
+                      Pending Pings
+                    </Text>
+                    <VStack spacing={1} align="stretch">
+                      {Object.entries(pendingPings).map(
+                        ([pingId, timestamp]) => (
+                          <HStack key={pingId} justifyContent="space-between">
+                            <Text fontSize="sm" color="gray.300">
+                              {pingId}
+                            </Text>
+                            <Text fontSize="sm" color="yellow.300">
+                              {Math.round((Date.now() - timestamp) / 1000)}s ago
+                            </Text>
+                          </HStack>
+                        )
+                      )}
+                    </VStack>
+                  </Box>
+                )}
+
+                {/* Latency Measurements */}
+                <Box p={4} bg="gray.700" borderRadius="md">
+                  <Text fontWeight="bold" mb={3}>
+                    Latency Measurements
+                  </Text>
+                  {Object.keys(latencyMeasurements).length === 0 ? (
+                    <Text color="gray.400" textAlign="center" py={4}>
+                      No latency measurements yet. Send some pings to see
+                      results!
+                    </Text>
+                  ) : (
+                    <VStack spacing={3} align="stretch">
+                      {Object.entries(latencyMeasurements).map(
+                        ([target, measurements]) => {
+                          const avgLatency = getAverageLatency(target);
+                          const latestLatency = getLatestLatency(target);
+
+                          return (
+                            <Box
+                              key={target}
+                              p={3}
+                              bg="gray.600"
+                              borderRadius="md"
+                            >
+                              <VStack spacing={2} align="stretch">
+                                <HStack justifyContent="space-between">
+                                  <Text fontWeight="semibold">
+                                    {formatPeerName(target)}
+                                  </Text>
+                                  <HStack spacing={4}>
+                                    <VStack spacing={0}>
+                                      <Text fontSize="xs" color="gray.300">
+                                        Latest
+                                      </Text>
+                                      <Text
+                                        fontSize="sm"
+                                        fontWeight="bold"
+                                        color="cyan.300"
+                                      >
+                                        {latestLatency}ms
+                                      </Text>
+                                    </VStack>
+                                    <VStack spacing={0}>
+                                      <Text fontSize="xs" color="gray.300">
+                                        Average
+                                      </Text>
+                                      <Text
+                                        fontSize="sm"
+                                        fontWeight="bold"
+                                        color="green.300"
+                                      >
+                                        {avgLatency}ms
+                                      </Text>
+                                    </VStack>
+                                    <VStack spacing={0}>
+                                      <Text fontSize="xs" color="gray.300">
+                                        Samples
+                                      </Text>
+                                      <Text
+                                        fontSize="sm"
+                                        fontWeight="bold"
+                                        color="purple.300"
+                                      >
+                                        {measurements.length}
+                                      </Text>
+                                    </VStack>
+                                  </HStack>
+                                </HStack>
+
+                                {/* Recent measurements */}
+                                <Box>
+                                  <Text fontSize="xs" color="gray.400" mb={1}>
+                                    Recent measurements:
+                                  </Text>
+                                  <HStack spacing={1} wrap="wrap">
+                                    {measurements
+                                      .slice(-5)
+                                      .map((measurement, index) => (
+                                        <Badge
+                                          key={index}
+                                          colorScheme={
+                                            measurement.mode === "blockchain"
+                                              ? "blue"
+                                              : "green"
+                                          }
+                                          variant="subtle"
+                                          fontSize="xs"
+                                        >
+                                          {measurement.latency_ms}ms (
+                                          {measurement.mode})
+                                        </Badge>
+                                      ))}
+                                  </HStack>
+                                </Box>
+                              </VStack>
+                            </Box>
+                          );
+                        }
+                      )}
+                    </VStack>
+                  )}
+                </Box>
+              </VStack>
+            </ModalBody>
+
+            <ModalFooter borderTopWidth="1px" borderColor="gray.700">
+              <Button
+                colorScheme="cyan"
+                mr={3}
+                onClick={() => setShowLatencyPanel(false)}
+              >
+                Close
               </Button>
             </ModalFooter>
           </ModalContent>
