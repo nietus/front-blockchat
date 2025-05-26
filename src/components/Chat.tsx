@@ -271,6 +271,7 @@ const Chat: React.FC = () => {
     Record<string, LatencyMeasurement[]>
   >({});
   const [pendingPings, setPendingPings] = useState<Record<string, number>>({});
+  const pendingPingsRef = useRef<Record<string, number>>({});
   const [showLatencyPanel, setShowLatencyPanel] = useState<boolean>(false);
 
   // Save values to localStorage when they change
@@ -1005,37 +1006,47 @@ const Chat: React.FC = () => {
           } else if (data.type === "ping_sent") {
             // Handle ping sent notification
             console.log(`Ping sent to ${data.target} with ID ${data.ping_id}`);
+
+            // Store in ref immediately for race condition protection
+            pendingPingsRef.current[data.ping_id] = data.timestamp;
+            console.log(
+              "🔍 Stored in ref immediately:",
+              pendingPingsRef.current
+            );
+
+            // Also update state for UI consistency
             setPendingPings((prev) => ({
               ...prev,
-              [data.ping_id]: data.timestamp, // Store timestamp as-is (milliseconds)
+              [data.ping_id]: data.timestamp,
             }));
 
             // Set timeout to clean up pending ping if no response (10 seconds)
             setTimeout(() => {
-              setPendingPings((prev) => {
-                if (prev[data.ping_id]) {
-                  console.warn(
-                    `Ping timeout for ${data.target} (ID: ${data.ping_id})`
-                  );
+              if (pendingPingsRef.current[data.ping_id]) {
+                console.warn(
+                  `Ping timeout for ${data.target} (ID: ${data.ping_id})`
+                );
 
-                  // Show timeout notification
-                  toast({
-                    title: `Ping Timeout`,
-                    description: `No response from ${formatPeerName(
-                      data.target
-                    )}`,
-                    status: "warning",
-                    duration: 3000,
-                    isClosable: true,
-                    position: "bottom-right",
-                  });
-
+                // Remove from both ref and state
+                delete pendingPingsRef.current[data.ping_id];
+                setPendingPings((prev) => {
                   const updated = { ...prev };
                   delete updated[data.ping_id];
                   return updated;
-                }
-                return prev;
-              });
+                });
+
+                // Show timeout notification
+                toast({
+                  title: `Ping Timeout`,
+                  description: `No response from ${formatPeerName(
+                    data.target
+                  )}`,
+                  status: "warning",
+                  duration: 3000,
+                  isClosable: true,
+                  position: "bottom-right",
+                });
+              }
             }, 10000);
           } else if (data.type === "ping_received") {
             // Handle ping received notification
@@ -1057,8 +1068,10 @@ const Chat: React.FC = () => {
             console.log(
               `Received pong from ${data.sender} for ping ${data.ping_id}`
             );
-
-            const pingTimestamp = pendingPings[data.ping_id];
+            // Use ref for immediate access (avoids race condition)
+            const pingTimestamp = pendingPingsRef.current[data.ping_id];
+            console.log("🔍 Found ping timestamp in ref:", pingTimestamp);
+            console.log("🔍 Current ref contents:", pendingPingsRef.current);
             if (pingTimestamp) {
               const now = Date.now();
               const latency_ms = now - pingTimestamp;
@@ -1094,7 +1107,8 @@ const Chat: React.FC = () => {
                 };
               });
 
-              // Remove from pending pings
+              // Remove from pending pings (both ref and state)
+              delete pendingPingsRef.current[data.ping_id];
               setPendingPings((prev) => {
                 const updated = { ...prev };
                 delete updated[data.ping_id];
