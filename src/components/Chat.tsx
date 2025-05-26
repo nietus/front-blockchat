@@ -1007,8 +1007,36 @@ const Chat: React.FC = () => {
             console.log(`Ping sent to ${data.target} with ID ${data.ping_id}`);
             setPendingPings((prev) => ({
               ...prev,
-              [data.ping_id]: data.timestamp / 1000, // Convert microseconds to milliseconds
+              [data.ping_id]: data.timestamp, // Store timestamp as-is (milliseconds)
             }));
+
+            // Set timeout to clean up pending ping if no response (10 seconds)
+            setTimeout(() => {
+              setPendingPings((prev) => {
+                if (prev[data.ping_id]) {
+                  console.warn(
+                    `Ping timeout for ${data.target} (ID: ${data.ping_id})`
+                  );
+
+                  // Show timeout notification
+                  toast({
+                    title: `Ping Timeout`,
+                    description: `No response from ${formatPeerName(
+                      data.target
+                    )}`,
+                    status: "warning",
+                    duration: 3000,
+                    isClosable: true,
+                    position: "bottom-right",
+                  });
+
+                  const updated = { ...prev };
+                  delete updated[data.ping_id];
+                  return updated;
+                }
+                return prev;
+              });
+            }, 10000);
           } else if (data.type === "ping_received") {
             // Handle ping received notification
             console.log(
@@ -1024,6 +1052,71 @@ const Chat: React.FC = () => {
               isClosable: true,
               position: "bottom-right",
             });
+          } else if (data.type === "pong") {
+            // Handle pong message - calculate latency in frontend
+            console.log(
+              `Received pong from ${data.sender} for ping ${data.ping_id}`
+            );
+
+            const pingTimestamp = pendingPings[data.ping_id];
+            if (pingTimestamp) {
+              const now = Date.now();
+              const latency_ms = now - pingTimestamp;
+
+              console.log(
+                `Calculated latency: ${latency_ms}ms to ${data.sender}`
+              );
+
+              // Create latency measurement
+              const measurement: LatencyMeasurement = {
+                target: data.sender,
+                latency_ms: latency_ms,
+                timestamp: now,
+                mode: data.mode || "p2p",
+                ping_id: data.ping_id,
+              };
+
+              setLatencyMeasurements((prev) => {
+                const targetMeasurements = prev[data.sender] || [];
+                const updatedMeasurements = [
+                  ...targetMeasurements,
+                  measurement,
+                ];
+
+                // Keep only the last 10 measurements per target
+                if (updatedMeasurements.length > 10) {
+                  updatedMeasurements.shift();
+                }
+
+                return {
+                  ...prev,
+                  [data.sender]: updatedMeasurements,
+                };
+              });
+
+              // Remove from pending pings
+              setPendingPings((prev) => {
+                const updated = { ...prev };
+                delete updated[data.ping_id];
+                return updated;
+              });
+
+              // Show toast notification
+              toast({
+                title: `Latency Measurement`,
+                description: `${latency_ms}ms to ${formatPeerName(
+                  data.sender
+                )}`,
+                status: "success",
+                duration: 3000,
+                isClosable: true,
+                position: "bottom-right",
+              });
+            } else {
+              console.warn(
+                `Received pong for unknown ping ID: ${data.ping_id}`
+              );
+            }
           } else if (data.type === "latency_measurement") {
             // Handle latency measurement result
             console.log(
